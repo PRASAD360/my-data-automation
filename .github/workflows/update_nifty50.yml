@@ -1,4 +1,4 @@
-name: test Nifty 50 CSV
+name: update Nifty 50 CSV
 
 on:
   schedule:
