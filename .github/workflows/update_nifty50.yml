@@ -1,1 +1,28 @@
 
+name: Auto Fetch Nifty 50 CSV
+
+on:
+  schedule:
+    - cron: '30 2 * * *' # Roz subah IST ke mutabik automatic chalega
+  workflow_dispatch: # Taki aap jab chahein button daba kar khud run kar sakein
+
+jobs:
+  fetch_csv:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Repo
+      uses: actions/checkout@v3
+
+    - name: Fetch Official Nifty 50 CSV
+      run: |
+        curl -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+             "https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv" > ind_nifty50list.csv
+
+    - name: Commit and Push if changed
+      run: |
+        git config --global user.name "GitHub Action"
+        git config --global user.email "action@github.com"
+        git add ind_nifty50list.csv
+        git commit -m "Official Nifty 50 CSV Auto Updated" || exit 0
+        git push
+        
