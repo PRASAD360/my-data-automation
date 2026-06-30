@@ -20,8 +20,16 @@ jobs:
         curl -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
              "https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv" > ind_nifty50list.csv
         
-        # 🔥 Force Update Trick: File ke aakhiri me ek invisible timestamp jodhna taaki GitHub ko har baar change dikhe
-        echo "# Force Update Key: $(date)" >> ind_nifty50list.csv
+        # Indian Timezone (IST) ka timestamp nikalna
+        CURRENT_TIME=$(env TZ=Asia/Kolkata date "+%Y-%m-%d %H:%M:%S IST")
+        
+        # 🔥 Force Update: File ke end me timestamp add karna
+        echo "# Force Update Key: $CURRENT_TIME" >> ind_nifty50list.csv
+        
+        # 📢 LOGS ME PRINT KARNA: Taaki aapko screen par bhi dikhe
+        echo "=========================================="
+        echo "💥 DATA FETCHED SUCCESS AT: $CURRENT_TIME"
+        echo "=========================================="
 
     - name: Commit and Force Push
       env:
