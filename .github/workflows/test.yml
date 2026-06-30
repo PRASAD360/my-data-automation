@@ -1,4 +1,4 @@
-name: test Nifty 50 CSV
+name: Nifty 50 CSV
 
 on:
   schedule:
