@@ -14,23 +14,21 @@ jobs:
     - name: Checkout Repo
       uses: actions/checkout@v3
 
-    - name: Fetch CSV and Inject Live Timestamp Column
+    - name: Fetch CSV and Add Clean Timestamp
       run: |
-        # 1. Official CSV download karo
+        # 1. Pehle original clean file download karo
         curl -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
              "https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv" > temp.csv
         
-        # 2. Indian Timezone (IST) nikalna
+        # 2. Live Indian Time nikalna
         CURRENT_TIME=$(env TZ=Asia/Kolkata date "+%Y-%m-%d %H:%M:%S IST")
         
-        # 3. Pehli line (Header) me ",Fetch_Time" jodna
-        sed "1s/$/,,Fetch_Time/" temp.csv > ind_nifty50list.csv
+        # 3. Pehli row (Header) ke aage Fetch_Time jodna
+        awk -v time="$CURRENT_TIME" 'NR==1 {print $0 ",Fetch_Time"} NR>1 {print $0 "," time}' temp.csv > ind_nifty50list.csv
         
-        # 4. Baki saari rows me live timestamp jodna aur final file banana
-        sed "1d; s/$/,$CURRENT_TIME/" temp.csv >> ind_nifty50list.csv
+        # 4. Kachra saaf karna
         rm temp.csv
-        
-        echo "Successfully injected timestamp: $CURRENT_TIME"
+        echo "Clean data generated with timestamp!"
 
     - name: Commit and Force Push
       env:
@@ -40,6 +38,5 @@ jobs:
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         git add ind_nifty50list.csv
         
-        # Is baar message me humne "With Timestamp" dala hai taaki pehchan sako
-        git commit -m "Official Nifty 50 CSV Force Updated With Timestamp" || exit 0
+        git commit -m "Official Nifty 50 CSV Clean Force Updated" || exit 0
         git push origin main --force
