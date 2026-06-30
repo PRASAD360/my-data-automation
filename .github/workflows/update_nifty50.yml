@@ -3,7 +3,7 @@ name: Auto Fetch Nifty 50 CSV
 
 on:
   schedule:
-    - cron: '30 2 * * *' # Roz subah IST ke mutabik automatic chalega
+    - cron: '30 19,0,2 * * *' # Roz subah IST ke mutabik automatic chalega
   workflow_dispatch: # Taki aap jab chahein button daba kar khud run kar sakein
 
 jobs:
