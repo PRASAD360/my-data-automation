@@ -1,10 +1,10 @@
-name: Auto Fetch Nifty 50 CSV
+name: test Nifty 50 CSV
 
 on:
   schedule:
-    - cron: '30 19 * * *'  # 1. Raat ke exact 1:00 AM IST par chalega
-    - cron: '30 0 * * *'   # 2. Subah ke exact 6:00 AM IST par chalega
-    - cron: '30 2 * * *'   # 3. Subah ke exact 8:00 AM IST par chalega
+    - cron: '30 19 * * *'  # 1:00 AM IST
+    - cron: '30 0 * * *'   # 6:00 AM IST
+    - cron: '30 2 * * *'   # 8:00 AM IST
   workflow_dispatch:
 
 jobs:
@@ -14,22 +14,23 @@ jobs:
     - name: Checkout Repo
       uses: actions/checkout@v3
 
-    - name: Fetch Official Nifty 50 CSV
+    - name: Fetch CSV and Inject Live Timestamp Column
       run: |
-        # Official CSV download karna
+        # 1. Official CSV download karo
         curl -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-             "https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv" > ind_nifty50list.csv
+             "https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv" > temp.csv
         
-        # Indian Timezone (IST) ka timestamp nikalna
+        # 2. Indian Timezone (IST) nikalna
         CURRENT_TIME=$(env TZ=Asia/Kolkata date "+%Y-%m-%d %H:%M:%S IST")
         
-        # 🔥 Force Update: File ke end me timestamp add karna
-        echo "# Force Update Key: $CURRENT_TIME" >> ind_nifty50list.csv
+        # 3. Pehli line (Header) me ",Fetch_Time" jodna
+        sed "1s/$/,,Fetch_Time/" temp.csv > ind_nifty50list.csv
         
-        # 📢 LOGS ME PRINT KARNA: Taaki aapko screen par bhi dikhe
-        echo "=========================================="
-        echo "💥 DATA FETCHED SUCCESS AT: $CURRENT_TIME"
-        echo "=========================================="
+        # 4. Baki saari rows me live timestamp jodna aur final file banana
+        sed "1d; s/$/,$CURRENT_TIME/" temp.csv >> ind_nifty50list.csv
+        rm temp.csv
+        
+        echo "Successfully injected timestamp: $CURRENT_TIME"
 
     - name: Commit and Force Push
       env:
@@ -39,5 +40,6 @@ jobs:
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         git add ind_nifty50list.csv
         
-        git commit -m "Official Nifty 50 CSV Force Updated" || exit 0
+        # Is baar message me humne "With Timestamp" dala hai taaki pehchan sako
+        git commit -m "Official Nifty 50 CSV Force Updated With Timestamp" || exit 0
         git push origin main --force
