@@ -1,17 +1,11 @@
-
 name: Auto Fetch Nifty 50 CSV
 
 on:
-schedule:
+  schedule:
     - cron: '30 19 * * *'  # 1. Raat ke exact 1:00 AM IST par chalega
     - cron: '30 0 * * *'   # 2. Subah ke exact 6:00 AM IST par chalega
     - cron: '30 2 * * *'   # 3. Subah ke exact 8:00 AM IST par chalega
-
-# Roz subah IST ke mutabik automatic chalega
-
-
-
-  workflow_dispatch: # Taki aap jab chahein button daba kar khud run kar sakein
+  workflow_dispatch:
 
 jobs:
   fetch_csv:
@@ -32,4 +26,3 @@ jobs:
         git add ind_nifty50list.csv
         git commit -m "Official Nifty 50 CSV Auto Updated" || exit 0
         git push
-        
