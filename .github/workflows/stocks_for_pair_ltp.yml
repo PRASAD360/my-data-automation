@@ -2,6 +2,9 @@ name: Hourly Pair CSV Generator
 
 on:
   workflow_dispatch: # Isse aap GitHub par jaakar manually "Run workflow" button daba sakte hain
+  schedule:
+    # ⏱️ Automatic scheduling: Har 1 ghante me run hone ke liye (Monday se Friday)
+    - cron: '0 * * * 1-5'
 
 jobs:
   build:
