@@ -9,7 +9,7 @@ import time
 SPREADSHEET_ID = "13JWuBGKiLVe8dgvIcXLM3JZbo2rO83rN6aujpP0IKCY"
 SOURCE_SHEET_NAME = "ALL_STOCKS_NAME"
 STOCK_RANGE = "B2:B201"  
-INTERVAL = "1h"
+INTERVAL = "1d"
 RANGE = "1y" 
 
 def get_stocks_from_exact_range():
