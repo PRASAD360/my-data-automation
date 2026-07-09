@@ -25,21 +25,19 @@ jobs:
     - name: Execute Fast CSV Engine
       run: python fetch_pairs.py
 
-    # 🎯 TARGET TRICK: Aapke Nifty 50 wale logic ke hisab se exact timestamp add karna
-    # Isse pair_data.csv ke end me exact IST time ka extra data column jud jayega
-    # Taki Github hamesha badlav (change) dekh sake aur skip na kare.
-     Silber: Append Fetch Time Column
-    run: |
-      if [ -f pair_data.csv ]; then
-        CURRENT_TIME=$(env TZ=Asia/Kolkata date "+%Y-%m-%d %H:%M:%S IST")
-        echo "🕒 Force Overwrite Time Generated: $CURRENT_TIME"
-        
-        # Matrix structured CSV ke liye awk logic: Header me ,Fetch_Time jodna aur data rows me timestamp
-        awk -v time="$CURRENT_TIME" 'NR==1 {print $0 ",Fetch_Time"} NR>1 {print $0 "," time}' pair_data.csv > temp_matrix.csv
-        mv temp_matrix.csv pair_data.csv
-      fi
+    # 🎯 FIXED: Yahan syntax ekdum correct kar diya hai
+    - name: Append Fetch Time Column
+      run: |
+        if [ -f pair_data.csv ]; then
+          CURRENT_TIME=$(env TZ=Asia/Kolkata date "+%Y-%m-%d %H:%M:%S IST")
+          echo "🕒 Force Overwrite Time Generated: $CURRENT_TIME"
+          
+          # Matrix structured CSV ke liye awk logic: Header me ,Fetch_Time jodna aur data rows me timestamp
+          awk -v time="$CURRENT_TIME" 'NR==1 {print $0 ",Fetch_Time"} NR>1 {print $0 "," time}' pair_data.csv > temp_matrix.csv
+          mv temp_matrix.csv pair_data.csv
+        fi
 
-    # 🚀 FORCE COMMIT & PUSH LOGIC (Aapke Nifty 50 Code Se Aligned)
+    # 🚀 FORCE COMMIT & PUSH LOGIC
     - name: Commit and Force Push
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
