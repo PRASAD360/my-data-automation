@@ -1,7 +1,7 @@
 name: Hourly Pair CSV Generator
 
 on:
-  workflow_dispatch: # Isse aap GitHub par jaakar manually "Run workflow" button daba sakte hain
+  workflow_dispatch: # Manual run ke liye
   schedule:
     # ⏱️ Automatic scheduling: Har 1 ghante me run hone ke liye (Monday se Friday)
     - cron: '0 * * * 1-5'
@@ -25,10 +25,28 @@ jobs:
     - name: Execute Fast CSV Engine
       run: python fetch_pairs.py
 
+    # ⏱️ LIGHTNING TRICK: Python script chalne ke baad, CSV ke end me current timestamp ka fattu column jodna force overwrite ke liye
+    - name: Append Fetch Time Column to CSV
+      run: |
+        if [ -f pair_data.csv ]; then
+          # IST Time calculate karna (GitHub default UTC hota hai, usme +5:30 joddna)
+          CURRENT_TIME=$(date -d '+5 hours +30 minutes' '+%Y-%m-%d %H:%M:%S')
+          echo "🕒 Current Fetch Time appended to workflow: $CURRENT_TIME"
+          
+          # Pandas ya sed chunk engine se CSV ki har row ke piche timestamp insert karne ka logic
+          python -c "
+import pandas as pd
+df = pd.read_csv('pair_data.csv')
+df['Fetch_Time'] = '$CURRENT_TIME'
+df.to_csv('pair_data.csv', index=False)
+"
+        fi
+
     - name: Commit and Push CSV File
       run: |
         git config --global user.name "GitHub Action"
         git config --global user.email "actions@github.com"
         git add pair_data.csv
-        git commit -m "Auto-updated pair data CSV from public sheet range" || exit 0
+        # Force commit tracking timestamp ke sath
+        git commit -m "Auto-updated pair data CSV [$(date -d '+5 hours +30 minutes' '+%Y-%m-%d %H:%M')]" || exit 0
         git push
