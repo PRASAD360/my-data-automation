@@ -4,13 +4,13 @@ import yfinance as yf
 import time
 
 # =========================================================================
-# 🎛️ CONFIGURATION (Aapki Exact Sheet, Tab Aur Range)
+# 🎛️ CONFIGURATION
 # =========================================================================
 SPREADSHEET_ID = "13JWuBGKiLVe8dgvIcXLM3JZbo2rO83rN6aujpP0IKCY"
 SOURCE_SHEET_NAME = "ALL_STOCKS_NAME"
 STOCK_RANGE = "B2:B201"  
 INTERVAL = "1h"
-RANGE = "1y" # Agad 1y rakhna hai, toh batches me fetch karna hi bulletproof hai
+RANGE = "90d" 
 
 def get_stocks_from_exact_range():
     try:
@@ -27,69 +27,91 @@ def get_stocks_from_exact_range():
             if sym == "" or sym.lower() == "nan" or sym.lower() == "null":
                 continue
             if ":" in sym:
-                sym = sym.split(":")[1].strip()
+                sym = sym.split(":")[-1].strip()
+            if "/" in sym:
+                sym = sym.split("/")[-1].strip()
+                
+            sym = sym.upper()
             if not sym.endswith(".NS"):
                 sym = sym + ".NS"
-            clean_symbols.append(sym)
+                
+            if sym not in clean_symbols:
+                clean_symbols.append(sym)
         return clean_symbols
     except Exception as e:
-        print(f"❌ Google Sheet ki range {STOCK_RANGE} se data read karne me dikkat aayi: {e}")
+        print(f"❌ Google Sheet read error: {e}")
         return []
 
 def main():
     symbols = get_stocks_from_exact_range()
     if not symbols:
-        print("❌ Di gayi range me koi valid stock symbol nahi mila. Process stopped.")
+        print("❌ Di gayi range me koi valid stock symbol nahi mila.")
         return
 
-    print(f"📊 Sheet ke '{STOCK_RANGE}' range se total {len(symbols)} stocks load ho gaye hain.")
-    print(f"🚀 Fetching hourly data from Yahoo Finance in Safe Batches...")
+    print(f"📊 Sheet se total {len(symbols)} stocks load ho gaye hain.")
+    print(f"🚀 Fetching hourly data with Smart Retry Engine...")
 
-    # ⚡ CHUNK-BASED DOWNLOAD SYSTEM (Bina data loss ke 1y data fetch karne ka tarika)
-    chunk_size = 20  # Ek baar me sirf 20 stocks fetch honge taaki Yahoo block na kare
-    all_chunks_data = []
+    # Master structure: Pehle se data frame ka base ready rakhna
+    close_prices = pd.DataFrame()
+    missing_stocks = []
 
-    for i in range(0, len(symbols), chunk_size):
-        batch = symbols[i:i + chunk_size]
-        print(f"📦 Fetching Batch {(i//chunk_size)+1}: {batch[0]} se {batch[-1]}...")
+    # ⚡ SINGLE-STREAM RETRY LOOP: Har ek stock ko nikalne ka solid tarika
+    for idx, ticker in enumerate(symbols, 1):
+        clean_name = ticker.replace(".NS", "")
+        success = False
         
-        # Safe Multi-threaded download for the batch
-        batch_data = yf.download(batch, period=RANGE, interval=INTERVAL, group_by='ticker', threads=True, progress=False)
-        all_chunks_data.append(batch_data)
-        
-        # ⏱️ 1 second ka gap taaki Yahoo ka server load handle kar sake
-        time.sleep(1)
+        # Ek stock ke liye 3 baar koshish karega agar data drop hota hai
+        for attempt in range(3):
+            try:
+                # Group_by hatakar direct single ticker pull
+                stock_data = yf.download(ticker, period=RANGE, interval=INTERVAL, progress=False, threads=False)
+                
+                if not stock_data.empty and 'Close' in stock_data.columns:
+                    # Series extraction data check
+                    series_data = stock_data['Close']
+                    if not series_data.dropna().empty:
+                        # Pehle stock se master index set hoga
+                        if close_prices.empty:
+                            close_prices = pd.DataFrame(index=stock_data.index)
+                        
+                        close_prices[clean_name] = series_data
+                        success = True
+                        break # Data mil gaya, loop se bahar
+            except Exception:
+                pass
+            
+            # Agar fail hua toh 0.3 sec rukk kar fir koshish karega
+            time.sleep(0.3)
+            
+        if success:
+            print(f"✅ [{idx}/{len(symbols)}] Loaded: {clean_name}")
+        else:
+            print(f"⚠️ [{idx}/{len(symbols)}] FAILED AFTER 3 ATTEMPTS: {clean_name}")
+            missing_stocks.append(clean_name)
 
-    print("✅ All batches received. Merging into a Unified Matrix...")
+    # 🚨 CRITICAL CHECK: Missing stocks ki poori reporting
+    if missing_stocks:
+        print("\n❌ DATA NOT FOUND FOR THESE STOCKS (Spelling/Symbol issue on Sheet):")
+        print(", ".join(missing_stocks))
+        print("-" * 60)
 
-    # Saare chunks ko ek bade dataframe me axis=1 (side-by-side) jodna
-    combined_data = pd.concat(all_chunks_data, axis=1)
-
-    # Absolute Matrix Alignment
-    close_prices = pd.DataFrame(index=combined_data.index)
-    for ticker in symbols:
-        # Check if ticker exists in multi-index columns
-        if ticker in combined_data.columns.levels[0]:
-            clean_name = ticker.replace(".NS", "")
-            close_prices[clean_name] = combined_data[ticker]['Close']
-
-    # Date aur Time format ko IST (Indian Standard Time) me convert karna
     if not close_prices.empty:
-        # Pata lagayein agar index already timezone aware hai ya nahi
         if close_prices.index.tz is None:
             close_prices.index = close_prices.index.tz_localize('UTC')
             
         close_prices.index = close_prices.index.tz_convert('Asia/Kolkata').strftime('%Y-%m-%d %H:%M')
         close_prices.reset_index(inplace=True)
         close_prices.rename(columns={'index': f'Date & Time ({INTERVAL})'}, inplace=True)
+        
+        # Kisi stock me thoda gap ho toh blank chhodna na ki zero ya error
         close_prices.fillna("", inplace=True)
 
-        # 📝 SAVE AS CSV
+        # Final Save
         csv_filename = "pair_data.csv"
         close_prices.to_csv(csv_filename, index=False)
-        print(f"🎯 BOOM! 100% Complete Range-Aligned Matrix CSV ban chuka hai: '{csv_filename}'")
+        print(f"\n🎯 BOOM! 100% Sateek Matrix ready ho gaya hai: '{csv_filename}'")
     else:
-        print("❌ Yahoo Finance se data fetch nahi ho paya, CSV empty hai.")
+        print("❌ Engine matrix build completely failed.")
 
 if __name__ == "__main__":
     main()
