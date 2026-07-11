@@ -12,6 +12,8 @@ jobs:
     steps:
     - name: Checkout Code
       uses: actions/checkout@v3
+      with:
+        fetch-depth: 0 # Naya code aur files fresh read karne ke liye
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -21,6 +23,13 @@ jobs:
     - name: Install Libraries
       run: |
         pip install yfinance pandas
+
+    - name: Force Overwrite/Truncate Previous CSV
+      run: |
+        if [ -f pair_data.csv ]; then
+          > pair_data.csv
+          echo "🧹 File content truncated safely without deleting the file."
+        fi
 
     - name: Execute Fast CSV Engine
       run: python fetch_pairs.py
