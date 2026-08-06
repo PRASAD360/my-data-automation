@@ -21,7 +21,7 @@ jobs:
         awk -v time="$CURRENT_TIME" 'NR==1 {print $0 ",Fetch_Time"} NR>1 {print $0 "," time}' temp.csv > ind_nifty50list.csv
         rm temp.csv
 
-    - name: Push to Grist Sheet and Fully Dynamic Sync
+    - name: Clean Overwrite Sheet & Dynamic Columns Sync
       env:
         GRIST_API_KEY: ${{ secrets.GRIST_API_KEY }}
         GRIST_DOC_ID: ${{ secrets.GRIST_DOC_ID }}
@@ -41,28 +41,18 @@ jobs:
             
             col_mapping = {}
             required_col_ids = []
-            symbol_col_id = None
 
             for idx, h in enumerate(csv_headers):
                 label = h.strip()
                 if not label: continue
                 
-                # Create a safe Grist column ID (no spaces/special chars)
+                # Create a safe Grist column ID
                 safe_id = re.sub(r'[^a-zA-Z0-9]', '_', label)
-                # Avoid starting with a number if header is numeric
                 if safe_id and safe_id[0].isdigit():
                     safe_id = 'col_' + safe_id
 
                 col_mapping[idx] = {'id': safe_id, 'label': label}
                 required_col_ids.append(safe_id)
-
-                # Find which column acts as the unique symbol matcher
-                if 'symbol' in label.lower():
-                    symbol_col_id = safe_id
-
-            if not symbol_col_id:
-                print('Error: Could not identify a Symbol column in the CSV headers.')
-                exit(1)
 
             # 2. Fetch existing columns in Grist
             cols_url = f'https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/columns'
@@ -79,23 +69,22 @@ jobs:
             except Exception as e:
                 print(f'Warning: Could not fetch existing columns: {e}')
 
-            # 3. Delete extra columns that are not currently in the CSV
+            # 3. Clean/Delete unknown or extra columns not belonging to the CSV
             for cid in existing_cols:
                 if cid not in required_col_ids:
                     del_url = f'{cols_url}/{cid}'
                     del_req = urllib.request.Request(del_url, headers={'Authorization': f'Bearer {api_key}'}, method='DELETE')
                     try:
                         with urllib.request.urlopen(del_req):
-                            print(f'Deleted outdated column: {cid}')
+                            print(f'Cleaned/Deleted unknown column: {cid}')
                     except Exception as e:
                         print(f'Could not delete column {cid}: {e}')
 
-            # 4. Create missing columns automatically based on the CSV headers
+            # 4. Create missing columns automatically based on CSV headers
             missing_cols = [cid for cid in required_col_ids if cid not in existing_cols]
             if missing_cols:
                 new_cols_payload = []
                 for cid in missing_cols:
-                    # Find matching label for this safe_id
                     label = next(info['label'] for info in col_mapping.values() if info['id'] == cid)
                     new_cols_payload.append({
                         'id': cid,
@@ -116,36 +105,53 @@ jobs:
                     method='POST'
                 )
                 try:
-                    with urllib.request.urlopen(req_add_cols) as resp:
-                        print(f'Successfully created missing columns dynamically: {missing_cols}')
+                    with urllib.request.urlopen(req_add_cols):
+                        print(f'Successfully created missing columns: {missing_cols}')
                 except urllib.error.HTTPError as e:
                     print(f'Error creating columns: {e.code} - {e.read().decode(\"utf-8\")}')
                     exit(1)
 
-            # 5. Parse rows using dynamic column IDs
+            # 5. Parse rows into records
             records = []
             for row in reader:
                 if not row or not any(row): continue
                 fields = {}
-                symbol_val = ''
-                
+                has_data = False
                 for idx, info in col_mapping.items():
                     if idx < len(row):
                         val = row[idx].strip()
-                        cid = info['id']
-                        fields[cid] = val
-                        if cid == symbol_col_id:
-                            symbol_val = val
-                
-                if symbol_val:
-                    records.append({'require': {symbol_col_id: symbol_val}, 'fields': fields})
+                        fields[info['id']] = val
+                        if val:
+                            has_data = True
+                if has_data:
+                    records.append({'fields': fields})
 
         if not records:
             print('Error: No valid records parsed from CSV.')
             exit(1)
 
-        # 6. Send records in batches via PUT (Upsert)
+        # 6. True Overwrite: Delete all existing rows first to clear out old rows and blank placeholder rows
         records_url = f'https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/records'
+        get_recs_req = urllib.request.Request(records_url, headers={'Authorization': f'Bearer {api_key}'}, method='GET')
+        try:
+            with urllib.request.urlopen(get_recs_req) as resp:
+                existing_data = json.loads(resp.read().decode('utf-8'))
+                old_ids = [rec['id'] for rec in existing_data.get('records', [])]
+                if old_ids:
+                    del_recs_url = f'https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/data/delete'
+                    del_recs_data = json.dumps(old_ids).encode('utf-8')
+                    del_recs_req = urllib.request.Request(
+                        del_recs_url, 
+                        data=del_recs_data,
+                        headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+                        method='POST'
+                    )
+                    with urllib.request.urlopen(del_recs_req):
+                        print(f'Cleared {len(old_ids)} old rows for a clean sheet overwrite.')
+        except Exception as e:
+            print(f'Note on clearing records: {e}')
+
+        # 7. Insert fresh records in batches
         for i in range(0, len(records), 100):
             batch = records[i:i+100]
             data = json.dumps({'records': batch}).encode('utf-8')
@@ -156,16 +162,16 @@ jobs:
                     'Authorization': f'Bearer {api_key}', 
                     'Content-Type': 'application/json'
                 }, 
-                method='PUT'
+                method='POST'
             )
             try:
                 with urllib.request.urlopen(req) as response:
                     print(response.read().decode('utf-8'))
             except urllib.error.HTTPError as e:
-                print(f'Error syncing to Grist: {e.code} - {e.read().decode(\"utf-8\")}')
+                print(f'Error inserting records: {e.code} - {e.read().decode(\"utf-8\")}')
                 exit(1)
 
-        print('Successfully synced data and dynamically matched CSV headers with Grist!')
+        print('Successfully performed a clean overwrite of sheet data and columns!')
         "
 
     - name: Commit and Force Push
