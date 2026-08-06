@@ -1,4 +1,4 @@
-name: Auto Fetching 
+name: Auto Fetch Nifty 50 CSV
 
 on:
   schedule:
@@ -21,7 +21,7 @@ jobs:
         awk -v time="$CURRENT_TIME" 'NR==1 {print $0 ",Fetch_Time"} NR>1 {print $0 "," time}' temp.csv > ind_nifty50list.csv
         rm temp.csv
 
-    - name: Push to Grist Sheet
+    - name: Push to Grist Sheet and Auto-Create Columns
       env:
         GRIST_API_KEY: ${{ secrets.GRIST_API_KEY }}
         GRIST_DOC_ID: ${{ secrets.GRIST_DOC_ID }}
@@ -33,41 +33,97 @@ jobs:
         api_key = os.environ['GRIST_API_KEY']
         doc_id = os.environ['GRIST_DOC_ID']
         table_id = os.environ['GRIST_TABLE_ID']
-        url = f'https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/records'
 
         def clean_key(key):
-            # Normalizes header text (e.g., 'Company Name' -> 'company_name' or handles variations)
             if not key: return ''
             return re.sub(r'[^a-zA-Z0-9]', '', key).lower()
 
-        records = []
+        # 1. Read CSV headers and map columns dynamically
         with open('ind_nifty50list.csv', mode='r', encoding='utf-8-sig') as f:
             reader = csv.reader(f)
-            headers = next(reader)
+            csv_headers = next(reader)
             
-            # Map column positions based on expected terms to stay robust against minor header edits
-            col_map = {}
-            for idx, h in enumerate(headers):
-                h_clean = clean_key(h)
-                if 'company' in h_clean: col_map[idx] = 'Company Name'
-                elif 'industry' in h_clean: col_map[idx] = 'Industry'
-                elif 'symbol' in h_clean: col_map[idx] = 'Symbol'
-                elif 'series' in h_clean: col_map[idx] = 'Series'
-                elif 'isin' in h_clean: col_map[idx] = 'ISIN Code'
-                elif 'fetch' in h_clean or 'time' in h_clean: col_map[idx] = 'Fetch_Time'
+            targets = {
+                'company': 'Company Name',
+                'industry': 'Industry',
+                'symbol': 'Symbol',
+                'series': 'Series',
+                'isin': 'ISIN Code',
+                'fetch': 'Fetch_Time',
+                'time': 'Fetch_Time'
+            }
 
+            detected_cols = {}
+            for idx, h in enumerate(csv_headers):
+                h_clean = clean_key(h)
+                for keyword, label in targets.items():
+                    if keyword in h_clean:
+                        detected_cols[label] = idx
+                        break
+
+            required_labels = ['Company Name', 'Industry', 'Symbol', 'Series', 'ISIN Code', 'Fetch_Time']
+
+            # 2. Check existing columns in Grist
+            cols_url = f'https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/columns'
+            req_cols = urllib.request.Request(cols_url, headers={'Authorization': f'Bearer {api_key}'}, method='GET')
+            
+            existing_labels = set()
+            try:
+                with urllib.request.urlopen(req_cols) as resp:
+                    data = json.loads(resp.read().decode('utf-8'))
+                    for col in data.get('columns', []):
+                        fields = col.get('fields', {})
+                        label = fields.get('label', col.get('id'))
+                        if label:
+                            existing_labels.add(label)
+            except Exception as e:
+                print(f'Warning: Could not fetch existing columns: {e}')
+
+            # 3. Automatically create missing columns via API if they don't exist
+            missing_labels = [label for label in required_labels if label not in existing_labels]
+            if missing_labels:
+                new_cols_payload = []
+                for label in missing_labels:
+                    safe_id = re.sub(r'[^a-zA-Z0-9]', '_', label)
+                    new_cols_payload.append({
+                        'id': safe_id,
+                        'fields': {
+                            'label': label,
+                            'type': 'Text'
+                        }
+                    })
+                
+                add_col_data = json.dumps({'columns': new_cols_payload}).encode('utf-8')
+                req_add_cols = urllib.request.Request(
+                    cols_url,
+                    data=add_col_data,
+                    headers={
+                        'Authorization': f'Bearer {api_key}',
+                        'Content-Type': 'application/json'
+                    },
+                    method='POST'
+                )
+                try:
+                    with urllib.request.urlopen(req_add_cols) as resp:
+                        print(f'Successfully auto-created missing Grist columns: {missing_labels}')
+                except urllib.error.HTTPError as e:
+                    print(f'Error creating columns automatically: {e.code} - {e.read().decode(\"utf-8\")}')
+                    exit(1)
+
+            # 4. Parse rows into records
+            records = []
             for row in reader:
                 if not row or not any(row): continue
                 fields = {}
                 symbol_val = ''
                 
-                for idx, val in enumerate(row):
-                    if idx in col_map:
-                        col_name = col_map[idx]
-                        fields[col_name] = val.strip()
-                        if col_name == 'Symbol':
-                            symbol_val = val.strip()
-
+                for label, idx in detected_cols.items():
+                    if idx < len(row):
+                        val = row[idx].strip()
+                        fields[label] = val
+                        if label == 'Symbol':
+                            symbol_val = val
+                
                 if symbol_val:
                     records.append({'require': {'Symbol': symbol_val}, 'fields': fields})
 
@@ -75,12 +131,13 @@ jobs:
             print('Error: No valid records parsed from CSV.')
             exit(1)
 
-        # Send in batches of 100
+        # 5. Send records in batches via PUT (Upsert)
+        records_url = f'https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/records'
         for i in range(0, len(records), 100):
             batch = records[i:i+100]
             data = json.dumps({'records': batch}).encode('utf-8')
             req = urllib.request.Request(
-                url, 
+                records_url, 
                 data=data, 
                 headers={
                     'Authorization': f'Bearer {api_key}', 
@@ -94,7 +151,8 @@ jobs:
             except urllib.error.HTTPError as e:
                 print(f'Error syncing to Grist: {e.code} - {e.read().decode(\"utf-8\")}')
                 exit(1)
-        print('Successfully synced Nifty 50 data to Grist robustly!')
+
+        print('Successfully synced Nifty 50 data and auto-managed columns in Grist!')
         "
 
     - name: Commit and Force Push
