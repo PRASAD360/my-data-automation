@@ -1,4 +1,4 @@
-name: Auto Fetch Nifty 50 CSV
+name: Auto Fetching 
 
 on:
   schedule:
