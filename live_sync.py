@@ -4,6 +4,7 @@ import urllib.request
 import re
 import pandas as pd
 import yfinance as yf
+import concurrent.futures
 
 # Load Grist environment configurations securely
 api_key = os.environ['GRIST_API_KEY']
@@ -38,19 +39,21 @@ if not tickers:
     print("Error: No tickers found from source table.")
     exit(1)
 
-print(f"Fetching chunked batch live market data for {len(tickers)} stocks...")
+print(f"Fetching ultra-fast parallel chunked live market data for {len(tickers)} stocks...")
 
 records = []
 standard_headers = ["Symbol", "Open", "High", "Low", "Close", "Volume", "Last_Updated"]
 
-# 50-50 tickers ke chunks mein download karna (Yahoo block se bachne ke liye aur fast speed ke liye)
+# 50-50 tickers ke chunks banayein
 chunk_size = 50
-for i in range(0, len(tickers), chunk_size):
-    chunk_tickers = tickers[i:i + chunk_size]
+chunks = [tickers[i:i + chunk_size] for i in range(0, len(tickers), chunk_size)]
+
+def download_chunk(chunk_tickers):
+    chunk_records = []
     try:
         df_all = yf.download(chunk_tickers, period="1d", interval="1m", group_by='ticker', progress=False)
         if df_all.empty:
-            continue
+            return chunk_records
 
         for ticker in chunk_tickers:
             try:
@@ -75,7 +78,7 @@ for i in range(0, len(tickers), chunk_size):
                             except Exception:
                                 return 0 if is_int else 0.0
 
-                        records.append({
+                        chunk_records.append({
                             "require": {
                                 "Symbol": ticker
                             },
@@ -88,10 +91,17 @@ for i in range(0, len(tickers), chunk_size):
                                 "Last_Updated": str(df.index[-1])
                             }
                         })
-            except Exception as e:
+            except Exception:
                 pass
     except Exception as e:
-        print(f"Chunk download error for batch {i}: {e}")
+        print(f"Chunk download error: {e}")
+    return chunk_records
+
+# ThreadPoolExecutor se multiple chunks ek sath (parallel) download honge
+with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    results = executor.map(download_chunk, chunks)
+    for chunk_result in results:
+        records.extend(chunk_result)
 
 if not records:
     print("Error: No valid records parsed from yfinance.")
