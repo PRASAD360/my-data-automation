@@ -18,13 +18,12 @@ print(f"Fetching live market data for: {tickers}")
 records = []
 standard_headers = ["Symbol", "Open", "High", "Low", "Close", "Volume", "Last_Updated"]
 
-for idx, ticker in enumerate(tickers, start=1):
+for ticker in tickers:
     try:
         df = yf.download(ticker, period="1d", interval="1m", progress=False)
         if not df.empty:
             latest_row = df.iloc[-1]
             
-            # Helper to extract values safely regardless of multi-index format
             def get_val(col_name, is_int=False):
                 try:
                     val = latest_row[col_name]
@@ -34,7 +33,6 @@ for idx, ticker in enumerate(tickers, start=1):
                 except Exception:
                     return 0 if is_int else 0.0
 
-            # Map to standard generic column names so all rows match
             open_p = get_val('Open')
             high_p = get_val('High')
             low_p = get_val('Low')
@@ -44,10 +42,12 @@ for idx, ticker in enumerate(tickers, start=1):
             
             print(f"{ticker} -> O:{open_p} H:{high_p} L:{low_p} C:{close_p} V:{vol}")
 
+            # Using 'require' to match rows by Symbol automatically (Upsert)
             records.append({
-                "id": idx,
+                "require": {
+                    "Symbol": ticker
+                },
                 "fields": {
-                    "Symbol": ticker,
                     "Open": open_p,
                     "High": high_p,
                     "Low": low_p,
@@ -119,7 +119,7 @@ if missing_cols:
         print(f"Error creating columns: {e.code} - {e.read().decode('utf-8')}")
         exit(1)
 
-# 4. Push records update to Grist
+# 4. Push records using PUT (Upsert matching on Symbol)
 records_url = f"https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/records"
 payload_data = json.dumps({"records": records}).encode('utf-8')
 
@@ -130,12 +130,12 @@ req = urllib.request.Request(
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     },
-    method="PATCH"
+    method="PUT"
 )
 
 try:
     with urllib.request.urlopen(req) as response:
-        print("Successfully updated Grist table records:", response.read().decode('utf-8'))
+        print("Successfully upserted Grist table records:", response.read().decode('utf-8'))
 except urllib.error.HTTPError as e:
     print(f"Grist API Error: {e.code} - {e.read().decode('utf-8')}")
     exit(1)
