@@ -1,41 +1,52 @@
-name: Auto Fetching 
+name: Universal Index Fetcher & Grist Sync
 
 on:
   schedule:
-    - cron: '30 19 * * *'  # 1:00 AM IST
-    - cron: '30 0 * * *'   # 6:00 AM IST
-    - cron: '30 2 * * *'   # 8:00 AM IST
+    - cron: '30 19 * * *'  # 1:00 AM IST (Default scheduled run)
   workflow_dispatch:
+    inputs:
+      csv_url:
+        description: 'Official CSV URL to fetch'
+        required: true
+        default: 'https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv'
+      table_id:
+        description: 'Grist Table ID to sync into'
+        required: true
+        default: 'Table1'
 
 jobs:
-  fetch_nifty50:
+  sync_index:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout Repo
       uses: actions/checkout@v3
 
-    - name: Fetch Nifty 50 and Add Timestamp
+    - name: Fetch CSV and Add Timestamp
+      env:
+        CSV_URL: ${{ github.event.inputs.csv_url || 'https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv' }}
       run: |
-        curl -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "https://www.niftyindices.com//IndexConstituent/ind_niftyautolist.csv" > temp.csv
+        echo "Fetching from: $CSV_URL"
+        curl -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "$CSV_URL" > temp.csv
         CURRENT_TIME=$(env TZ=Asia/Kolkata date "+%Y-%m-%d %H:%M:%S IST")
-        awk -v time="$CURRENT_TIME" 'NR==1 {print $0 ",Fetch_Time"} NR>1 {print $0 "," time}' temp.csv > ind_nifty50list.csv
+        awk -v time="$CURRENT_TIME" 'NR==1 {print $0 ",Fetch_Time"} NR>1 {print $0 "," time}' temp.csv > target_list.csv
         rm temp.csv
 
     - name: Clean Overwrite Sheet & Dynamic Columns Sync
       env:
         GRIST_API_KEY: ${{ secrets.GRIST_API_KEY }}
         GRIST_DOC_ID: ${{ secrets.GRIST_DOC_ID }}
-        GRIST_TABLE_ID_NIFTY_AUTO: ${{ secrets.GRIST_TABLE_ID_NIFTY_AUTO }}
+        GRIST_TABLE_ID: ${{ github.event.inputs.table_id || 'Table1' }}
       run: |
         python3 -c "
         import csv, json, os, urllib.request, re
 
         api_key = os.environ['GRIST_API_KEY']
         doc_id = os.environ['GRIST_DOC_ID']
-        table_id = os.environ['GRIST_TABLE_ID_NIFTY_AUTO']
+        table_id = os.environ['GRIST_TABLE_ID']
+        print(f'Target Grist Table ID: {table_id}')
 
         # 1. Read headers directly from the CSV dynamically
-        with open('ind_nifty50list.csv', mode='r', encoding='utf-8-sig') as f:
+        with open('target_list.csv', mode='r', encoding='utf-8-sig') as f:
             reader = csv.reader(f)
             csv_headers = next(reader)
             
@@ -130,7 +141,7 @@ jobs:
             print('Error: No valid records parsed from CSV.')
             exit(1)
 
-        # 6. True Overwrite: Delete all existing rows first to clear out old rows and blank placeholder rows
+        # 6. True Overwrite: Delete all existing rows first to clear out old data
         records_url = f'https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/records'
         get_recs_req = urllib.request.Request(records_url, headers={'Authorization': f'Bearer {api_key}'}, method='GET')
         try:
@@ -174,12 +185,5 @@ jobs:
         print('Successfully performed a clean overwrite of sheet data and columns!')
         "
 
-    - name: Commit and Force Push
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        git config --global user.name "github-actions[bot]"
-        git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        git add ind_nifty50list.csv
-        git commit -m "Nifty 50 Force Updated" || exit 0
-        git push origin main --force
+    - name: Clean up temporary file
+      run: rm -f target_list.csv
