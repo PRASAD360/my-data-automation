@@ -1,4 +1,4 @@
-name: Nifty Bank
+name: Nifty_Bank
 
 on:
   schedule:
@@ -14,7 +14,7 @@ on:
       table_id:
         description: 'Grist Table ID to sync into'
         required: true
-        default: 'Nifty Bank'
+        default: 'Nifty_Bank'
 
 jobs:
   sync_index:
