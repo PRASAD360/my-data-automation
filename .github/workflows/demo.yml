@@ -12,7 +12,7 @@ on:
       table_id:
         description: 'Grist Table ID to sync into'
         required: true
-        default: 'Table1'
+        default: 'NIFTY_AUTO'
 
 jobs:
   sync_index:
