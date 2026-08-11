@@ -1,4 +1,4 @@
-name: NIFTY_AUTO
+name: Nifty Auto
 
 on:
   schedule:
