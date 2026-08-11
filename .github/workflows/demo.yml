@@ -1,4 +1,4 @@
-name: Universal Index Fetcher & Grist Sync
+name: NIFTY_AUTO
 
 on:
   schedule:
