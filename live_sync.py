@@ -4,7 +4,6 @@ import urllib.request
 import re
 import pandas as pd
 import yfinance as yf
-import concurrent.futures
 
 # Load Grist environment configurations securely
 api_key = os.environ['GRIST_API_KEY']
@@ -39,58 +38,66 @@ if not tickers:
     print("Error: No tickers found from source table.")
     exit(1)
 
-print(f"Fetching super-fast parallel live market data for {len(tickers)} stocks...")
+print(f"Fetching chunked batch live market data for {len(tickers)} stocks...")
 
 records = []
 standard_headers = ["Symbol", "Open", "High", "Low", "Close", "Volume", "Last_Updated"]
 
-# Ek single ticker ko fetch karne ka function (Parallel execution ke liye)
-def fetch_stock_data(ticker):
+# 50-50 tickers ke chunks mein download karna (Yahoo block se bachne ke liye aur fast speed ke liye)
+chunk_size = 50
+for i in range(0, len(tickers), chunk_size):
+    chunk_tickers = tickers[i:i + chunk_size]
     try:
-        df = yf.download(ticker, period="1d", interval="1m", progress=False)
-        if not df.empty:
-            df = df.dropna(subset=['Close'])
-            if not df.empty:
-                latest_row = df.iloc[-1]
+        df_all = yf.download(chunk_tickers, period="1d", interval="1m", group_by='ticker', progress=False)
+        if df_all.empty:
+            continue
 
-                def get_val(col_name, is_int=False):
-                    try:
-                        val = latest_row[col_name]
-                        if hasattr(val, 'iloc'):
-                            val = val.iloc[0]
-                        return int(val) if is_int else float(val)
-                    except Exception:
-                        return 0 if is_int else 0.0
+        for ticker in chunk_tickers:
+            try:
+                df = pd.DataFrame()
+                if len(chunk_tickers) == 1:
+                    df = df_all
+                else:
+                    if ticker in df_all.columns.levels[0]:
+                        df = df_all[ticker]
 
-                return {
-                    "require": {
-                        "Symbol": ticker
-                    },
-                    "fields": {
-                        "Open": get_val('Open'),
-                        "High": get_val('High'),
-                        "Low": get_val('Low'),
-                        "Close": get_val('Close'),
-                        "Volume": get_val('Volume', is_int=True),
-                        "Last_Updated": str(df.index[-1])
-                    }
-                }
+                if not df.empty:
+                    df = df.dropna(subset=['Close'])
+                    if not df.empty:
+                        latest_row = df.iloc[-1]
+
+                        def get_val(col_name, is_int=False):
+                            try:
+                                val = latest_row[col_name]
+                                if hasattr(val, 'iloc'):
+                                    val = val.iloc[0]
+                                return int(val) if is_int else float(val)
+                            except Exception:
+                                return 0 if is_int else 0.0
+
+                        records.append({
+                            "require": {
+                                "Symbol": ticker
+                            },
+                            "fields": {
+                                "Open": get_val('Open'),
+                                "High": get_val('High'),
+                                "Low": get_val('Low'),
+                                "Close": get_val('Close'),
+                                "Volume": get_val('Volume', is_int=True),
+                                "Last_Updated": str(df.index[-1])
+                            }
+                        })
+            except Exception as e:
+                pass
     except Exception as e:
-        pass
-    return None
-
-# ThreadPoolExecutor se multiple tickers ek sath download honge (Super Fast)
-with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-    results = list(executor.map(fetch_stock_data, tickers))
-
-# Sirf valid records ko filter karein
-records = [r for r in results if r is not None]
+        print(f"Chunk download error for batch {i}: {e}")
 
 if not records:
     print("Error: No valid records parsed from yfinance.")
     exit(1)
 
-print(f"Successfully fetched data for {len(records)} stocks. Pushing to Grist...")
+print(f"Successfully parsed {len(records)} stocks. Pushing to Grist...")
 
 # 1. Fetch existing columns from Grist to compare
 cols_url = f"https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/columns"
