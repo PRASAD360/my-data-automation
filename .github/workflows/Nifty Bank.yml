@@ -37,15 +37,18 @@ jobs:
       env:
         GRIST_API_KEY: ${{ secrets.GRIST_API_KEY }}
         GRIST_DOC_ID: ${{ secrets.GRIST_DOC_ID }}
-        GRIST_TABLE_ID: ${{ github.event.inputs.table_id || 'Table1' }}
+        GRIST_TABLE_ID: ${{ github.event.inputs.table_id || 'Nifty Bank' }}
       run: |
         python3 -c "
-        import csv, json, os, urllib.request, re
+        import csv, json, os, urllib.request, urllib.parse, re
 
         api_key = os.environ['GRIST_API_KEY']
         doc_id = os.environ['GRIST_DOC_ID']
-        table_id = os.environ['GRIST_TABLE_ID']
-        print(f'Target Grist Table ID: {table_id}')
+        raw_table_id = os.environ['GRIST_TABLE_ID']
+        
+        # URL-encode the table ID to safely handle spaces (e.g., 'Nifty Bank' -> 'Nifty%20Bank')
+        table_id = urllib.parse.quote(raw_table_id)
+        print(f'Target Grist Table ID: {raw_table_id}')
 
         # 1. Read headers directly from the CSV dynamically
         with open('target_list.csv', mode='r', encoding='utf-8-sig') as f:
