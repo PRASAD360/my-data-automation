@@ -5,7 +5,7 @@ import re
 import pandas as pd
 import yfinance as yf
 
-# Load Grist environment configurations securely from the workflow environment
+# Load Grist environment configurations securely
 api_key = os.environ['GRIST_API_KEY']
 doc_id = os.environ['GRIST_DOC_ID']
 table_id = os.environ['GRIST_TABLE_ID']
@@ -13,62 +13,57 @@ table_id = os.environ['GRIST_TABLE_ID']
 # List of Indian stocks to track (append .NS for NSE symbols)
 tickers = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "SBIN.NS"]
 
-print(f"Fetching dynamic live market data for: {tickers}")
+print(f"Fetching live market data for: {tickers}")
 
 records = []
-all_source_headers = []
+standard_headers = ["Symbol", "Open", "High", "Low", "Close", "Volume", "Last_Updated"]
 
-# 1. Fetch data and dynamically discover all source columns
 for idx, ticker in enumerate(tickers, start=1):
     try:
         df = yf.download(ticker, period="1d", interval="1m", progress=False)
         if not df.empty:
             latest_row = df.iloc[-1]
-            fields = {"Symbol": ticker}
             
-            # Extract all available metrics dynamically from the source
-            for raw_col in df.columns:
-                safe_id = re.sub(r'[^a-zA-Z0-9]', '_', str(raw_col))
-                if safe_id and safe_id[0].isdigit():
-                    safe_id = 'col_' + safe_id
-                
-                val = latest_row[raw_col]
-                if hasattr(val, 'iloc'):
-                    val = val.iloc[0]
-                
-                # Format as integer for volume or float for prices
-                if pd.api.types.is_integer_dtype(df[raw_col]) or 'Volume' in str(raw_col):
-                    fields[safe_id] = int(val) if not pd.isna(val) else 0
-                else:
-                    fields[safe_id] = float(val) if not pd.isna(val) else 0.0
-                
-                if safe_id not in all_source_headers and safe_id != 'id':
-                    all_source_headers.append(safe_id)
+            # Helper to extract values safely regardless of multi-index format
+            def get_val(col_name, is_int=False):
+                try:
+                    val = latest_row[col_name]
+                    if hasattr(val, 'iloc'):
+                        val = val.iloc[0]
+                    return int(val) if is_int else float(val)
+                except Exception:
+                    return 0 if is_int else 0.0
 
-            # Append timestamp tracking
-            if "Last_Updated" not in all_source_headers:
-                all_source_headers.append("Last_Updated")
-            fields["Last_Updated"] = str(df.index[-1])
+            # Map to standard generic column names so all rows match
+            open_p = get_val('Open')
+            high_p = get_val('High')
+            low_p = get_val('Low')
+            close_p = get_val('Close')
+            vol = get_val('Volume', is_int=True)
+            timestamp = str(df.index[-1])
+            
+            print(f"{ticker} -> O:{open_p} H:{high_p} L:{low_p} C:{close_p} V:{vol}")
 
             records.append({
                 "id": idx,
-                "fields": fields
+                "fields": {
+                    "Symbol": ticker,
+                    "Open": open_p,
+                    "High": high_p,
+                    "Low": low_p,
+                    "Close": close_p,
+                    "Volume": vol,
+                    "Last_Updated": timestamp
+                }
             })
     except Exception as e:
         print(f"Error fetching {ticker}: {e}")
-
-# Ensure 'Symbol' leads the sequence
-if "Symbol" in all_source_headers:
-    all_source_headers.remove("Symbol")
-required_col_ids = ["Symbol"] + all_source_headers
-
-print(f"Discovered source columns sequence: {required_col_ids}")
 
 if not records:
     print("Error: No valid records parsed from yfinance.")
     exit(1)
 
-# 2. Fetch existing columns from Grist to compare
+# 1. Fetch existing columns from Grist to compare
 cols_url = f"https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/columns"
 req_cols = urllib.request.Request(cols_url, headers={"Authorization": f"Bearer {api_key}"}, method="GET")
 
@@ -83,9 +78,9 @@ try:
 except Exception as e:
     print(f"Warning: Could not fetch existing columns: {e}")
 
-# 3. Automatically Clean / Delete unnecessary or fake columns not in the source
+# 2. Clean / Delete unnecessary or fake columns not in the standard set
 for cid in existing_cols:
-    if cid not in required_col_ids:
+    if cid not in standard_headers:
         del_url = f"{cols_url}/{cid}"
         del_req = urllib.request.Request(del_url, headers={"Authorization": f"Bearer {api_key}"}, method="DELETE")
         try:
@@ -94,15 +89,15 @@ for cid in existing_cols:
         except Exception as e:
             print(f"Could not delete column {cid}: {e}")
 
-# 4. Automatically Create missing columns based on source sequence
-missing_cols = [cid for cid in required_col_ids if cid not in existing_cols]
+# 3. Automatically Create missing standard columns if they don't exist
+missing_cols = [cid for cid in standard_headers if cid not in existing_cols]
 if missing_cols:
     new_cols_payload = []
     for cid in missing_cols:
         new_cols_payload.append({
             'id': cid,
             'fields': {
-                'label': cid.replace('_', ' ').title(),
+                'label': cid.replace('_', ' '),
                 'type': 'Numeric' if cid not in ['Symbol', 'Last_Updated'] else 'Text'
             }
         })
@@ -124,7 +119,7 @@ if missing_cols:
         print(f"Error creating columns: {e.code} - {e.read().decode('utf-8')}")
         exit(1)
 
-# 5. Push records update to Grist
+# 4. Push records update to Grist
 records_url = f"https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/records"
 payload_data = json.dumps({"records": records}).encode('utf-8')
 
