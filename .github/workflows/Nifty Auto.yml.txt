@@ -1,0 +1,191 @@
+name: Nifty Auto
+
+on:
+  schedule:
+    - cron: '30 19 * * *'  # 1:00 AM IST
+    - cron: '30 0 * * *'   # 6:00 AM IST
+    - cron: '30 2 * * *'   # 8:00 AM IST (Default scheduled run)
+  workflow_dispatch:
+    inputs:
+      csv_url:
+        description: 'Official CSV URL to fetch'
+        required: true
+        default: 'https://www.niftyindices.com//IndexConstituent/ind_niftyautolist.csv'
+      table_id:
+        description: 'Grist Table ID to sync into'
+        required: true
+        default: 'Nifty Auto'
+
+jobs:
+  sync_index:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Repo
+      uses: actions/checkout@v3
+
+    - name: Fetch CSV and Add Timestamp
+      env:
+        CSV_URL: ${{ github.event.inputs.csv_url || 'https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv' }}
+      run: |
+        echo "Fetching from: $CSV_URL"
+        curl -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "$CSV_URL" > temp.csv
+        CURRENT_TIME=$(env TZ=Asia/Kolkata date "+%Y-%m-%d %H:%M:%S IST")
+        awk -v time="$CURRENT_TIME" 'NR==1 {print $0 ",Fetch_Time"} NR>1 {print $0 "," time}' temp.csv > target_list.csv
+        rm temp.csv
+
+    - name: Clean Overwrite Sheet & Dynamic Columns Sync
+      env:
+        GRIST_API_KEY: ${{ secrets.GRIST_API_KEY }}
+        GRIST_DOC_ID: ${{ secrets.GRIST_DOC_ID }}
+        GRIST_TABLE_ID: ${{ github.event.inputs.table_id || 'Table1' }}
+      run: |
+        python3 -c "
+        import csv, json, os, urllib.request, re
+
+        api_key = os.environ['GRIST_API_KEY']
+        doc_id = os.environ['GRIST_DOC_ID']
+        table_id = os.environ['GRIST_TABLE_ID']
+        print(f'Target Grist Table ID: {table_id}')
+
+        # 1. Read headers directly from the CSV dynamically
+        with open('target_list.csv', mode='r', encoding='utf-8-sig') as f:
+            reader = csv.reader(f)
+            csv_headers = next(reader)
+            
+            col_mapping = {}
+            required_col_ids = []
+
+            for idx, h in enumerate(csv_headers):
+                label = h.strip()
+                if not label: continue
+                
+                # Create a safe Grist column ID
+                safe_id = re.sub(r'[^a-zA-Z0-9]', '_', label)
+                if safe_id and safe_id[0].isdigit():
+                    safe_id = 'col_' + safe_id
+
+                col_mapping[idx] = {'id': safe_id, 'label': label}
+                required_col_ids.append(safe_id)
+
+            # 2. Fetch existing columns in Grist
+            cols_url = f'https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/columns'
+            req_cols = urllib.request.Request(cols_url, headers={'Authorization': f'Bearer {api_key}'}, method='GET')
+            
+            existing_cols = []
+            try:
+                with urllib.request.urlopen(req_cols) as resp:
+                    data = json.loads(resp.read().decode('utf-8'))
+                    for col in data.get('columns', []):
+                        cid = col.get('id')
+                        if cid and cid != 'id':
+                            existing_cols.append(cid)
+            except Exception as e:
+                print(f'Warning: Could not fetch existing columns: {e}')
+
+            # 3. Clean/Delete unknown or extra columns not belonging to the CSV
+            for cid in existing_cols:
+                if cid not in required_col_ids:
+                    del_url = f'{cols_url}/{cid}'
+                    del_req = urllib.request.Request(del_url, headers={'Authorization': f'Bearer {api_key}'}, method='DELETE')
+                    try:
+                        with urllib.request.urlopen(del_req):
+                            print(f'Cleaned/Deleted unknown column: {cid}')
+                    except Exception as e:
+                        print(f'Could not delete column {cid}: {e}')
+
+            # 4. Create missing columns automatically based on CSV headers
+            missing_cols = [cid for cid in required_col_ids if cid not in existing_cols]
+            if missing_cols:
+                new_cols_payload = []
+                for cid in missing_cols:
+                    label = next(info['label'] for info in col_mapping.values() if info['id'] == cid)
+                    new_cols_payload.append({
+                        'id': cid,
+                        'fields': {
+                            'label': label,
+                            'type': 'Text'
+                        }
+                    })
+                
+                add_col_data = json.dumps({'columns': new_cols_payload}).encode('utf-8')
+                req_add_cols = urllib.request.Request(
+                    cols_url,
+                    data=add_col_data,
+                    headers={
+                        'Authorization': f'Bearer {api_key}',
+                        'Content-Type': 'application/json'
+                    },
+                    method='POST'
+                )
+                try:
+                    with urllib.request.urlopen(req_add_cols):
+                        print(f'Successfully created missing columns: {missing_cols}')
+                except urllib.error.HTTPError as e:
+                    print(f'Error creating columns: {e.code} - {e.read().decode(\"utf-8\")}')
+                    exit(1)
+
+            # 5. Parse rows into records
+            records = []
+            for row in reader:
+                if not row or not any(row): continue
+                fields = {}
+                has_data = False
+                for idx, info in col_mapping.items():
+                    if idx < len(row):
+                        val = row[idx].strip()
+                        fields[info['id']] = val
+                        if val:
+                            has_data = True
+                if has_data:
+                    records.append({'fields': fields})
+
+        if not records:
+            print('Error: No valid records parsed from CSV.')
+            exit(1)
+
+        # 6. True Overwrite: Delete all existing rows first to clear out old data
+        records_url = f'https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/records'
+        get_recs_req = urllib.request.Request(records_url, headers={'Authorization': f'Bearer {api_key}'}, method='GET')
+        try:
+            with urllib.request.urlopen(get_recs_req) as resp:
+                existing_data = json.loads(resp.read().decode('utf-8'))
+                old_ids = [rec['id'] for rec in existing_data.get('records', [])]
+                if old_ids:
+                    del_recs_url = f'https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/data/delete'
+                    del_recs_data = json.dumps(old_ids).encode('utf-8')
+                    del_recs_req = urllib.request.Request(
+                        del_recs_url, 
+                        data=del_recs_data,
+                        headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+                        method='POST'
+                    )
+                    with urllib.request.urlopen(del_recs_req):
+                        print(f'Cleared {len(old_ids)} old rows for a clean sheet overwrite.')
+        except Exception as e:
+            print(f'Note on clearing records: {e}')
+
+        # 7. Insert fresh records in batches
+        for i in range(0, len(records), 100):
+            batch = records[i:i+100]
+            data = json.dumps({'records': batch}).encode('utf-8')
+            req = urllib.request.Request(
+                records_url, 
+                data=data, 
+                headers={
+                    'Authorization': f'Bearer {api_key}', 
+                    'Content-Type': 'application/json'
+                }, 
+                method='POST'
+            )
+            try:
+                with urllib.request.urlopen(req) as response:
+                    print(response.read().decode('utf-8'))
+            except urllib.error.HTTPError as e:
+                print(f'Error inserting records: {e.code} - {e.read().decode(\"utf-8\")}')
+                exit(1)
+
+        print('Successfully performed a clean overwrite of sheet data and columns!')
+        "
+
+    - name: Clean up temporary file
+      run: rm -f target_list.csv
