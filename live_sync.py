@@ -5,7 +5,7 @@ import yfinance as yf
 
 # Load Grist environment configurations securely
 api_key = os.environ['GRIST_API_KEY']
-doc_id = os.environ['GRIST_DOC_ID']
+doc_id = os.environ['GRIST_DOC_ID_LIVE']
 table_id = os.environ['GRIST_TABLE_ID']
 
 # List of Indian stocks to track (append .NS for NSE symbols)
