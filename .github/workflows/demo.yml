@@ -25,14 +25,14 @@ jobs:
       env:
         GRIST_API_KEY: ${{ secrets.GRIST_API_KEY }}
         GRIST_DOC_ID: ${{ secrets.GRIST_DOC_ID }}
-        GRIST_TABLE_ID_NIFTY_AUTO: ${{ secrets.GRIST_TABLE_ID }}
+        GRIST_TABLE_ID_NIFTY_AUTO: ${{ secrets.GRIST_TABLE_ID_NIFTY_AUTO }}
       run: |
         python3 -c "
         import csv, json, os, urllib.request, re
 
         api_key = os.environ['GRIST_API_KEY']
         doc_id = os.environ['GRIST_DOC_ID']
-        table_id = os.environ['GRIST_TABLE_ID']
+        table_id = os.environ['GRIST_TABLE_ID_NIFTY_AUTO']
 
         # 1. Read headers directly from the CSV dynamically
         with open('ind_nifty50list.csv', mode='r', encoding='utf-8-sig') as f:
