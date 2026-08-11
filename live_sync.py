@@ -10,7 +10,7 @@ api_key = os.environ['GRIST_API_KEY']
 doc_id = os.environ['GRIST_DOC_ID']
 table_id = os.environ['GRIST_TABLE_ID']
 
-# --- Yahan apni Table ID aur Column Name dein jahan se tickers lene hain ---
+# --- Tickers kahaan se lene hain uski Table ID aur Column Name ---
 SOURCE_TABLE_ID = "SYMBOLS"    
 SOURCE_COLUMN_NAME = "SYMBOLS"  
 
@@ -38,51 +38,61 @@ if not tickers:
     print("Error: No tickers found from source table.")
     exit(1)
 
-print(f"Fetching live market data for: {tickers}")
+print(f"Fetching fast batch live market data for {len(tickers)} stocks...")
 
 records = []
 standard_headers = ["Symbol", "Open", "High", "Low", "Close", "Volume", "Last_Updated"]
 
-for ticker in tickers:
-    try:
-        df = yf.download(ticker, period="1d", interval="1m", progress=False)
-        if not df.empty:
-            latest_row = df.iloc[-1]
+try:
+    # Ek hi baar mein saare tickers ka data download karein (Fast Batch Download)
+    df_all = yf.download(tickers, period="1d", interval="1m", group_by='ticker', progress=False)
 
-            def get_val(col_name, is_int=False):
-                try:
-                    val = latest_row[col_name]
-                    if hasattr(val, 'iloc'):
-                        val = val.iloc[0]
-                    return int(val) if is_int else float(val)
-                except Exception:
-                    return 0 if is_int else 0.0
+    for ticker in tickers:
+        try:
+            if len(tickers) == 1:
+                df = df_all
+            else:
+                df = df_all[ticker] if ticker in df_all.columns.levels[0] else pd.DataFrame()
 
-            open_p = get_val('Open')
-            high_p = get_val('High')
-            low_p = get_val('Low')
-            close_p = get_val('Close')
-            vol = get_val('Volume', is_int=True)
-            timestamp = str(df.index[-1])
+            if not df.empty:
+                df = df.dropna(subset=['Close'])
+                if not df.empty:
+                    latest_row = df.iloc[-1]
 
-            print(f"{ticker} -> O:{open_p} H:{high_p} L:{low_p} C:{close_p} V:{vol}")
+                    def get_val(col_name, is_int=False):
+                        try:
+                            val = latest_row[col_name]
+                            if hasattr(val, 'iloc'):
+                                val = val.iloc[0]
+                            return int(val) if is_int else float(val)
+                        except Exception:
+                            return 0 if is_int else 0.0
 
-            # Using 'require' to match rows by Symbol automatically (Upsert)
-            records.append({
-                "require": {
-                    "Symbol": ticker
-                },
-                "fields": {
-                    "Open": open_p,
-                    "High": high_p,
-                    "Low": low_p,
-                    "Close": close_p,
-                    "Volume": vol,
-                    "Last_Updated": timestamp
-                }
-            })
-    except Exception as e:
-        print(f"Error fetching {ticker}: {e}")
+                    open_p = get_val('Open')
+                    high_p = get_val('High')
+                    low_p = get_val('Low')
+                    close_p = get_val('Close')
+                    vol = get_val('Volume', is_int=True)
+                    timestamp = str(df.index[-1])
+
+                    records.append({
+                        "require": {
+                            "Symbol": ticker
+                        },
+                        "fields": {
+                            "Open": open_p,
+                            "High": high_p,
+                            "Low": low_p,
+                            "Close": close_p,
+                            "Volume": vol,
+                            "Last_Updated": timestamp
+                        }
+                    })
+        except Exception as e:
+            print(f"Error processing {ticker}: {e}")
+
+except Exception as e:
+    print(f"Batch download error: {e}")
 
 if not records:
     print("Error: No valid records parsed from yfinance.")
