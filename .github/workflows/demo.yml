@@ -16,7 +16,7 @@ jobs:
 
     - name: Fetch Nifty 50 and Add Timestamp
       run: |
-        curl -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv" > temp.csv
+        curl -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "https://www.niftyindices.com//IndexConstituent/ind_niftyautolist.csv" > temp.csv
         CURRENT_TIME=$(env TZ=Asia/Kolkata date "+%Y-%m-%d %H:%M:%S IST")
         awk -v time="$CURRENT_TIME" 'NR==1 {print $0 ",Fetch_Time"} NR>1 {print $0 "," time}' temp.csv > ind_nifty50list.csv
         rm temp.csv
@@ -25,7 +25,7 @@ jobs:
       env:
         GRIST_API_KEY: ${{ secrets.GRIST_API_KEY }}
         GRIST_DOC_ID: ${{ secrets.GRIST_DOC_ID }}
-        GRIST_TABLE_ID: ${{ secrets.GRIST_TABLE_ID }}
+        GRIST_TABLE_ID_NIFTY_AUTO: ${{ secrets.GRIST_TABLE_ID }}
       run: |
         python3 -c "
         import csv, json, os, urllib.request, re
