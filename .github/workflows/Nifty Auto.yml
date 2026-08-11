@@ -14,7 +14,7 @@ on:
       table_id:
         description: 'Grist Table ID to sync into'
         required: true
-        default: 'NIFTY_AUTO'
+        default: 'Nifty Auto'
 
 jobs:
   sync_index:
