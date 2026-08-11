@@ -28,6 +28,6 @@ jobs:
     - name: Run Automated Script
       env:
         GRIST_API_KEY: ${{ secrets.GRIST_API_KEY }}
-        GRIST_DOC_ID: ${{ secrets.GRIST_DOC_ID_LIVE }}
+        GRIST_DOC_ID: ${{ secrets.GRIST_DOC_ID }}
         GRIST_TABLE_ID: ${{ github.event.inputs.table_id || 'LivePrices' }}
       run: python live_sync.py
