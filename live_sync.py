@@ -5,17 +5,21 @@ import re
 import pandas as pd
 import yfinance as yf
 import concurrent.futures
+import time
+
+# Poori script ka start time
+total_start = time.time()
 
 # Load Grist environment configurations securely
 api_key = os.environ['GRIST_API_KEY']
 doc_id = os.environ['GRIST_DOC_ID']
 table_id = os.environ['GRIST_TABLE_ID']
 
-# --- Tickers kahaan se lene hain uski Table ID aur Column Name ---
 SOURCE_TABLE_ID = "SYMBOLS"    
 SOURCE_COLUMN_NAME = "SYMBOLS"  
 
-# Grist se tickers dynamically fetch karne ka code
+# 1. Grist se tickers fetch karna
+t0 = time.time()
 tickers = []
 try:
     src_url = f"https://docs.getgrist.com/api/docs/{doc_id}/tables/{SOURCE_TABLE_ID}/records"
@@ -32,19 +36,18 @@ try:
 except Exception as e:
     print(f"Error fetching tickers from Grist: {e}")
 
-# Duplicates hatayein
 tickers = list(dict.fromkeys(tickers))
+print(f"-> Tickers fetched in: {time.time() - t0:.2f} seconds")
 
 if not tickers:
     print("Error: No tickers found from source table.")
     exit(1)
 
-print(f"Fetching ultra-fast parallel chunked live market data for {len(tickers)} stocks...")
+print(f"Fetching parallel chunked live market data for {len(tickers)} stocks...")
 
 records = []
 standard_headers = ["Symbol", "Open", "High", "Low", "Close", "Volume", "Last_Updated"]
 
-# 50-50 tickers ke chunks banayein
 chunk_size = 50
 chunks = [tickers[i:i + chunk_size] for i in range(0, len(tickers), chunk_size)]
 
@@ -97,19 +100,22 @@ def download_chunk(chunk_tickers):
         print(f"Chunk download error: {e}")
     return chunk_records
 
-# ThreadPoolExecutor se multiple chunks ek sath (parallel) download honge
+# 2. Yfinance Download Time Measure karna
+t1 = time.time()
 with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
     results = executor.map(download_chunk, chunks)
     for chunk_result in results:
         records.extend(chunk_result)
 
+print(f"-> Yfinance Download finished in: {time.time() - t1:.2f} seconds")
+
 if not records:
     print("Error: No valid records parsed from yfinance.")
     exit(1)
 
-print(f"Successfully parsed {len(records)} stocks. Pushing to Grist...")
+print(f"Successfully parsed {len(records)} stocks. Checking Grist columns...")
 
-# 1. Fetch existing columns from Grist to compare
+# 3. Grist Columns Check / Create
 cols_url = f"https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/columns"
 req_cols = urllib.request.Request(cols_url, headers={"Authorization": f"Bearer {api_key}"}, method="GET")
 
@@ -124,18 +130,16 @@ try:
 except Exception as e:
     print(f"Warning: Could not fetch existing columns: {e}")
 
-# 2. Clean / Delete unnecessary or fake columns not in the standard set
 for cid in existing_cols:
     if cid not in standard_headers:
         del_url = f"{cols_url}/{cid}"
         del_req = urllib.request.Request(del_url, headers={"Authorization": f"Bearer {api_key}"}, method="DELETE")
         try:
             with urllib.request.urlopen(del_req):
-                print(f"Cleaned/Deleted unnecessary column: {cid}")
-        except Exception as e:
-            print(f"Could not delete column {cid}: {e}")
+                pass
+        except Exception:
+            pass
 
-# 3. Automatically Create missing standard columns if they don't exist
 missing_cols = [cid for cid in standard_headers if cid not in existing_cols]
 if missing_cols:
     new_cols_payload = []
@@ -160,12 +164,14 @@ if missing_cols:
     )
     try:
         with urllib.request.urlopen(req_add_cols):
-            print(f"Successfully created missing columns: {missing_cols}")
+            pass
     except urllib.error.HTTPError as e:
         print(f"Error creating columns: {e.code} - {e.read().decode('utf-8')}")
         exit(1)
 
-# 4. Push records using PUT (Upsert matching on Symbol)
+# 4. Grist Records Push (Upsert) Time Measure karna
+t2 = time.time()
+print("Pushing records to Grist...")
 records_url = f"https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/records"
 payload_data = json.dumps({"records": records}).encode('utf-8')
 
@@ -181,7 +187,10 @@ req = urllib.request.Request(
 
 try:
     with urllib.request.urlopen(req) as response:
-        print("Successfully upserted Grist table records:", response.read().decode('utf-8'))
+        print(f"-> Grist Upload finished in: {time.time() - t2:.2f} seconds")
+        print("Successfully upserted Grist table records.")
 except urllib.error.HTTPError as e:
     print(f"Grist API Error: {e.code} - {e.read().decode('utf-8')}")
     exit(1)
+
+print(f"=== Total Script Execution Time: {time.time() - total_start:.2f} seconds ===")
