@@ -1,17 +1,17 @@
 name: Dynamic Live Market Auto-Sync
 
 on:
-  schedule:
-    - cron: '*/5 * * * 1-5'
   workflow_dispatch:
     inputs:
       table_id:
         description: 'Grist Table ID'
         required: true
         default: 'LivePrices'
+  repository_dispatch:
+    types: [trigger-sync]
 
 jobs:
-_sync:
+  sync:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout Repository
