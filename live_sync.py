@@ -10,8 +10,33 @@ api_key = os.environ['GRIST_API_KEY']
 doc_id = os.environ['GRIST_DOC_ID']
 table_id = os.environ['GRIST_TABLE_ID']
 
-# List of Indian stocks to track (append .NS for NSE symbols)
-tickers = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "SBIN.NS"]
+# --- Yahan apni Table ID aur Column Name dein jahan se tickers lene hain ---
+SOURCE_TABLE_ID = "SYMBOLS"    
+SOURCE_COLUMN_NAME = "SYMBOLS"  
+
+# Grist se tickers dynamically fetch karne ka code
+tickers = []
+try:
+    src_url = f"https://docs.getgrist.com/api/docs/{doc_id}/tables/{SOURCE_TABLE_ID}/records"
+    req_src = urllib.request.Request(src_url, headers={"Authorization": f"Bearer {api_key}"}, method="GET")
+    with urllib.request.urlopen(req_src) as resp:
+        data = json.loads(resp.read().decode('utf-8'))
+        for row in data.get('records', []):
+            val = row.get('fields', {}).get(SOURCE_COLUMN_NAME)
+            if val:
+                t = str(val).strip()
+                if not t.endswith('.NS'):
+                    t += '.NS'
+                tickers.append(t)
+except Exception as e:
+    print(f"Error fetching tickers from Grist: {e}")
+
+# Duplicates hatayein
+tickers = list(dict.fromkeys(tickers))
+
+if not tickers:
+    print("Error: No tickers found from source table.")
+    exit(1)
 
 print(f"Fetching live market data for: {tickers}")
 
@@ -23,7 +48,7 @@ for ticker in tickers:
         df = yf.download(ticker, period="1d", interval="1m", progress=False)
         if not df.empty:
             latest_row = df.iloc[-1]
-            
+
             def get_val(col_name, is_int=False):
                 try:
                     val = latest_row[col_name]
@@ -39,7 +64,7 @@ for ticker in tickers:
             close_p = get_val('Close')
             vol = get_val('Volume', is_int=True)
             timestamp = str(df.index[-1])
-            
+
             print(f"{ticker} -> O:{open_p} H:{high_p} L:{low_p} C:{close_p} V:{vol}")
 
             # Using 'require' to match rows by Symbol automatically (Upsert)
@@ -101,7 +126,7 @@ if missing_cols:
                 'type': 'Numeric' if cid not in ['Symbol', 'Last_Updated'] else 'Text'
             }
         })
-    
+
     add_col_data = json.dumps({'columns': new_cols_payload}).encode('utf-8')
     req_add_cols = urllib.request.Request(
         cols_url,
