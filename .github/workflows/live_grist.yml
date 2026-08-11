@@ -1,0 +1,34 @@
+name: Live Market OHLCV Sync to Grist
+
+on:
+  schedule:
+    # Runs every 5 minutes from Monday to Friday during trading hours
+    - cron: '*/5 * * * 1-5'
+  workflow_dispatch:
+    inputs:
+      table_id:
+        description: 'Grist Table ID'
+        required: true
+        default: 'LivePrices'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install Dependencies
+      run: pip install -r requirements.txt
+
+    - name: Execute Live Sync Script
+      env:
+        GRIST_API_KEY: ${{ secrets.GRIST_API_KEY }}
+        GRIST_DOC_ID: ${{ secrets.GRIST_DOC_ID }}
+        GRIST_TABLE_ID: ${{ github.event.inputs.table_id || 'LivePrices' }}
+      run: python live_sync.py
