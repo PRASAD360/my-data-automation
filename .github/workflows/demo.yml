@@ -2,7 +2,9 @@ name: Universal Index Fetcher & Grist Sync
 
 on:
   schedule:
-    - cron: '30 19 * * *'  # 1:00 AM IST (Default scheduled run)
+    - cron: '30 19 * * *'  # 1:00 AM IST
+    - cron: '30 0 * * *'   # 6:00 AM IST
+    - cron: '30 2 * * *'   # 8:00 AM IST (Default scheduled run)
   workflow_dispatch:
     inputs:
       csv_url:
