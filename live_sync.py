@@ -10,38 +10,41 @@ api_key = os.environ['GRIST_API_KEY']
 doc_id = os.environ['GRIST_DOC_ID']
 table_id = os.environ['GRIST_TABLE_ID']
 
-# --- Tickers kahaan se lene hain uski Table ID aur Column Name ---
+# --- Tickers aur Industry kahaan se lene hain uski Table ID aur Column Names ---
 SOURCE_TABLE_ID = "SYMBOLS"    
 SOURCE_COLUMN_NAME = "SYMBOLS"  
+INDUSTRY_COLUMN_NAME = "INDUSTRY"
 
-# Grist se tickers dynamically fetch karne ka code
-tickers = []
+# Grist se tickers aur unke industry names dynamically fetch karne ka code
+stock_data_map = {}
 try:
     src_url = f"https://docs.getgrist.com/api/docs/{doc_id}/tables/{SOURCE_TABLE_ID}/records"
     req_src = urllib.request.Request(src_url, headers={"Authorization": f"Bearer {api_key}"}, method="GET")
     with urllib.request.urlopen(req_src) as resp:
         data = json.loads(resp.read().decode('utf-8'))
         for row in data.get('records', []):
-            val = row.get('fields', {}).get(SOURCE_COLUMN_NAME)
+            fields = row.get('fields', {})
+            val = fields.get(SOURCE_COLUMN_NAME)
+            ind_val = fields.get(INDUSTRY_COLUMN_NAME, "")
             if val:
                 t = str(val).strip()
                 if not t.endswith('.NS'):
                     t += '.NS'
-                tickers.append(t)
+                stock_data_map[t] = str(ind_val).strip() if ind_val else ""
 except Exception as e:
     print(f"Error fetching tickers from Grist: {e}")
 
-# Duplicates hatayein
-tickers = list(dict.fromkeys(tickers))
+# Duplicates hatayein (tickers ki list)
+tickers = list(dict.fromkeys(stock_data_map.keys()))
 
 if not tickers:
     print("Error: No tickers found from source table.")
     exit(1)
 
-print(f"Fetching chunked batch live market data for {len(tickers)} stocks...")
+print(f"Fetching chunked batch live market data with industry names for {len(tickers)} stocks...")
 
 records_to_save = []
-standard_headers = ["Symbol", "Open", "High", "Low", "Close", "Volume", "Last_Updated"]
+standard_headers = ["Symbol", "Industry", "Open", "High", "Low", "Close", "Volume", "Last_Updated"]
 
 # 50-50 tickers ke chunks mein download karna
 chunk_size = 50
@@ -78,6 +81,7 @@ for i in range(0, len(tickers), chunk_size):
                         records_to_save.append({
                             "fields": {
                                 "Symbol": ticker,
+                                "Industry": stock_data_map.get(ticker, ""),
                                 "Open": get_val('Open'),
                                 "High": get_val('High'),
                                 "Low": get_val('Low'),
@@ -132,7 +136,7 @@ if missing_cols:
             'id': cid,
             'fields': {
                 'label': cid.replace('_', ' '),
-                'type': 'Numeric' if cid not in ['Symbol', 'Last_Updated'] else 'Text'
+                'type': 'Numeric' if cid not in ['Symbol', 'Industry', 'Last_Updated'] else 'Text'
             }
         })
 
@@ -190,7 +194,7 @@ if update_records:
             method="PATCH"
         )
         with urllib.request.urlopen(req_patch) as resp:
-            print("Successfully overwritten top rows sequentially.")
+            print("Successfully overwritten top rows sequentially with Industry names.")
     except urllib.error.HTTPError as e:
         print(f"Error updating rows: {e.code} - {e.read().decode('utf-8')}")
 
@@ -209,7 +213,7 @@ if create_records:
     except urllib.error.HTTPError as e:
         print(f"Error creating extra rows: {e.code} - {e.read().decode('utf-8')}")
 
-# Step C: Agar purane records zyada the aur naye kam hain, toh neeche ke bache hue sabhi excess rows ko PATCH karke blank/empty kar do
+# Step C: Agar purane records zyada the aur naye kam hain, toh neeche ke bache hue excess rows ko PATCH karke blank kar do
 if len(existing_records) > len(records_to_save):
     excess_updates = []
     for row in existing_records[len(records_to_save):]:
@@ -217,6 +221,7 @@ if len(existing_records) > len(records_to_save):
             "id": row['id'],
             "fields": {
                 "Symbol": "",
+                "Industry": "",
                 "Open": 0.0,
                 "High": 0.0,
                 "Low": 0.0,
