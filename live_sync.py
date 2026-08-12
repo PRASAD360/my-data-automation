@@ -213,19 +213,20 @@ if create_records:
     except urllib.error.HTTPError as e:
         print(f"Error creating extra rows: {e.code} - {e.read().decode('utf-8')}")
 
-# Step C: Agar purane records zyada the aur naye kam hain, toh neeche ke bache hue excess rows ko DELETE kar do
+# Step C: Excess rows ko 50-50 ke batches mein safely delete karna
 if len(existing_records) > len(records_to_save):
     excess_ids = [row['id'] for row in existing_records[len(records_to_save):]]
-    
-    if excess_ids:
+    chunk_del_size = 50
+    for j in range(0, len(excess_ids), chunk_del_size):
+        batch_ids = excess_ids[j:j + chunk_del_size]
         try:
-            delete_url = f"{records_url}?" + "&".join([f"id={rid}" for rid in excess_ids])
+            delete_url = f"{records_url}?" + "&".join([f"id={rid}" for rid in batch_ids])
             req_delete = urllib.request.Request(
                 delete_url,
                 headers={"Authorization": f"Bearer {api_key}"},
                 method="DELETE"
             )
             with urllib.request.urlopen(req_delete) as resp:
-                print(f"Successfully deleted {len(excess_ids)} excess rows from the bottom.")
+                print(f"Successfully deleted batch of excess rows.")
         except urllib.error.HTTPError as e:
-            print(f"Error deleting excess rows: {e.code} - {e.read().decode('utf-8')}")
+            print(f"Error deleting excess rows batch: {e.code} - {e.read().decode('utf-8')}")
