@@ -1,6 +1,7 @@
 import os
 import json
 import urllib.request
+import urllib.parse
 import re
 import pandas as pd
 import yfinance as yf
@@ -169,30 +170,27 @@ update_records = []
 create_records = []
 
 # 5. Sequential Overwrite Logic:
-# Jitne incoming records hain, unhe pehli existing IDs par map kar do.
 for idx, rec in enumerate(records_to_save):
     if idx < len(existing_records):
-        # Pehli existing IDs par overwrite (update) karo
         ex_id = existing_records[idx]['id']
         update_records.append({
             "id": ex_id,
             "fields": rec["fields"]
         })
     else:
-        # Agar naye records purane walon se zyada hain, toh naye create karo
         create_records.append(rec)
 
-# Step A: Existing rows ko unhi IDs par overwrite karo
+# Step A: Existing rows ko unhi IDs par PATCH (overwrite) karo
 if update_records:
     try:
-        put_payload = json.dumps({"records": update_records}).encode('utf-8')
-        req_put = urllib.request.Request(
+        patch_payload = json.dumps({"records": update_records}).encode('utf-8')
+        req_patch = urllib.request.Request(
             records_url,
-            data=put_payload,
+            data=patch_payload,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            method="PUT"
+            method="PATCH"
         )
-        with urllib.request.urlopen(req_put) as resp:
+        with urllib.request.urlopen(req_patch) as resp:
             print("Successfully overwritten top rows sequentially.")
     except urllib.error.HTTPError as e:
         print(f"Error updating rows: {e.code} - {e.read().decode('utf-8')}")
@@ -212,16 +210,16 @@ if create_records:
     except urllib.error.HTTPError as e:
         print(f"Error creating extra rows: {e.code} - {e.read().decode('utf-8')}")
 
-# Step C: Agar purane records zyada the aur naye kam hain, toh neeche ke bache hue sabhi records delete kar do
+# Step C: Agar purane records zyada the aur naye kam hain, toh neeche ke bache hue sabhi records delete karo
 if len(existing_records) > len(records_to_save):
     excess_ids = [row['id'] for row in existing_records[len(records_to_save):]]
     if excess_ids:
         try:
-            del_payload = json.dumps(excess_ids).encode('utf-8')
+            del_json = json.dumps(excess_ids)
+            del_url = f"{records_url}?del={urllib.parse.quote(del_json)}"
             req_del = urllib.request.Request(
-                records_url,
-                data=del_payload,
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                del_url,
+                headers={"Authorization": f"Bearer {api_key}"},
                 method="DELETE"
             )
             with urllib.request.urlopen(req_del) as resp:
