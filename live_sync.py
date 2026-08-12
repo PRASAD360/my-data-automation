@@ -1,7 +1,6 @@
 import os
 import json
 import urllib.request
-import urllib.parse
 import re
 import pandas as pd
 import yfinance as yf
@@ -210,16 +209,19 @@ if create_records:
     except urllib.error.HTTPError as e:
         print(f"Error creating extra rows: {e.code} - {e.read().decode('utf-8')}")
 
-# Step C: Agar purane records zyada the aur naye kam hain, toh neeche ke bache hue sabhi records delete karo
+# Step C: Agar purane records zyada the aur naye kam hain, toh neeche ke bache hue sabhi records body mein ID array bhej kar delete karo
 if len(existing_records) > len(records_to_save):
     excess_ids = [row['id'] for row in existing_records[len(records_to_save):]]
     if excess_ids:
         try:
-            del_json = json.dumps(excess_ids)
-            del_url = f"{records_url}?del={urllib.parse.quote(del_json)}"
+            del_payload = json.dumps(excess_ids).encode('utf-8')
             req_del = urllib.request.Request(
-                del_url,
-                headers={"Authorization": f"Bearer {api_key}"},
+                records_url,
+                data=del_payload,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                },
                 method="DELETE"
             )
             with urllib.request.urlopen(req_del) as resp:
