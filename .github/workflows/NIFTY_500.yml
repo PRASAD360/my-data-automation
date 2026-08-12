@@ -10,7 +10,7 @@ on:
       csv_url:
         description: 'Official CSV URL to fetch'
         required: true
-        default: 'https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv'
+        default: 'https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv'
       table_id:
         description: 'Grist Table ID to sync into'
         required: true
