@@ -4,6 +4,7 @@ import urllib.request
 import re
 import pandas as pd
 import yfinance as yf
+import urllib.parse
 
 # Load Grist environment configurations securely
 api_key = os.environ['GRIST_API_KEY']
@@ -43,7 +44,7 @@ print(f"Fetching chunked batch live market data for {len(tickers)} stocks...")
 records = []
 standard_headers = ["Symbol", "Open", "High", "Low", "Close", "Volume", "Last_Updated"]
 
-# 50-50 tickers ke chunks mein download karna (Yahoo block se bachne ke liye aur fast speed ke liye)
+# 50-50 tickers ke chunks mein download karna
 chunk_size = 50
 for i in range(0, len(tickers), chunk_size):
     chunk_tickers = tickers[i:i + chunk_size]
@@ -175,3 +176,23 @@ try:
 except urllib.error.HTTPError as e:
     print(f"Grist API Error: {e.code} - {e.read().decode('utf-8')}")
     exit(1)
+
+# 5. Delete old/unknown rows in target table that are not present in source tickers
+try:
+    req_get_target = urllib.request.Request(records_url, headers={"Authorization": f"Bearer {api_key}"}, method="GET")
+    with urllib.request.urlopen(req_get_target) as resp:
+        target_data = json.loads(resp.read().decode('utf-8'))
+        ids_to_delete = []
+        for row in target_data.get('records', []):
+            sym = row.get('fields', {}).get('Symbol')
+            if sym and sym not in tickers:
+                ids_to_delete.append(row.get('id'))
+        
+        if ids_to_delete:
+            del_ids_str = json.dumps(ids_to_delete)
+            del_url = f"{records_url}?del={urllib.parse.quote(del_ids_str)}"
+            req_del = urllib.request.Request(del_url, headers={"Authorization": f"Bearer {api_key}"}, method="DELETE")
+            with urllib.request.urlopen(req_del):
+                print(f"Cleaned up {len(ids_to_delete)} obsolete rows not found in the source table.")
+except Exception as e:
+    print(f"Could not delete obsolete rows: {e}")
