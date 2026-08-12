@@ -209,22 +209,33 @@ if create_records:
     except urllib.error.HTTPError as e:
         print(f"Error creating extra rows: {e.code} - {e.read().decode('utf-8')}")
 
-# Step C: Agar purane records zyada the aur naye kam hain, toh neeche ke bache hue sabhi records body mein ID array bhej kar delete karo
+# Step C: Agar purane records zyada the aur naye kam hain, toh neeche ke bache hue sabhi excess rows ko PATCH karke blank/empty kar do
 if len(existing_records) > len(records_to_save):
-    excess_ids = [row['id'] for row in existing_records[len(records_to_save):]]
-    if excess_ids:
+    excess_updates = []
+    for row in existing_records[len(records_to_save):]:
+        excess_updates.append({
+            "id": row['id'],
+            "fields": {
+                "Symbol": "",
+                "Open": 0.0,
+                "High": 0.0,
+                "Low": 0.0,
+                "Close": 0.0,
+                "Volume": 0,
+                "Last_Updated": ""
+            }
+        })
+    
+    if excess_updates:
         try:
-            del_payload = json.dumps(excess_ids).encode('utf-8')
-            req_del = urllib.request.Request(
+            clear_payload = json.dumps({"records": excess_updates}).encode('utf-8')
+            req_clear = urllib.request.Request(
                 records_url,
-                data=del_payload,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
-                },
-                method="DELETE"
+                data=clear_payload,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                method="PATCH"
             )
-            with urllib.request.urlopen(req_del) as resp:
-                print(f"Successfully deleted {len(excess_ids)} excess rows from the bottom.")
+            with urllib.request.urlopen(req_clear) as resp:
+                print(f"Successfully cleared {len(excess_updates)} excess rows from the bottom.")
         except urllib.error.HTTPError as e:
-            print(f"Error deleting excess rows: {e.code} - {e.read().decode('utf-8')}")
+            print(f"Error clearing excess rows: {e.code} - {e.read().decode('utf-8')}")
