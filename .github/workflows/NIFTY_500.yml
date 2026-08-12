@@ -37,7 +37,7 @@ jobs:
       env:
         GRIST_API_KEY: ${{ secrets.GRIST_API_KEY }}
         GRIST_DOC_ID: ${{ secrets.GRIST_DOC_ID }}
-        GRIST_TABLE_ID: ${{ github.event.inputs.table_id || 'Table1' }}
+        GRIST_TABLE_ID: ${{ github.event.inputs.table_id || 'NIFTY_500' }}
       run: |
         python3 -c "
         import csv, json, os, urllib.request, re
