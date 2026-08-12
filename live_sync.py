@@ -40,7 +40,7 @@ if not tickers:
 
 print(f"Fetching chunked batch live market data for {len(tickers)} stocks...")
 
-records = []
+records_to_save = []
 standard_headers = ["Symbol", "Open", "High", "Low", "Close", "Volume", "Last_Updated"]
 
 # 50-50 tickers ke chunks mein download karna
@@ -75,11 +75,9 @@ for i in range(0, len(tickers), chunk_size):
                             except Exception:
                                 return 0 if is_int else 0.0
 
-                        records.append({
-                            "require": {
-                                "Symbol": ticker
-                            },
+                        records_to_save.append({
                             "fields": {
+                                "Symbol": ticker,
                                 "Open": get_val('Open'),
                                 "High": get_val('High'),
                                 "Low": get_val('Low'),
@@ -93,11 +91,11 @@ for i in range(0, len(tickers), chunk_size):
     except Exception as e:
         print(f"Chunk download error for batch {i}: {e}")
 
-if not records:
+if not records_to_save:
     print("Error: No valid records parsed from yfinance.")
     exit(1)
 
-print(f"Successfully parsed {len(records)} stocks. Preparing Grist columns...")
+print(f"Successfully parsed {len(records_to_save)} stocks. Preparing Grist columns...")
 
 # 1. Fetch existing columns from Grist to compare
 cols_url = f"https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/columns"
@@ -155,50 +153,78 @@ if missing_cols:
         print(f"Error creating columns: {e.code} - {e.read().decode('utf-8')}")
         exit(1)
 
-# 4. Pehle naye records ko PUT (Upsert) karke update/insert karo
 records_url = f"https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/records"
-payload_data = json.dumps({"records": records}).encode('utf-8')
 
-req = urllib.request.Request(
-    records_url,
-    data=payload_data,
-    headers={
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    },
-    method="PUT"
-)
-
-try:
-    with urllib.request.urlopen(req) as response:
-        print("Successfully upserted Grist table records:", response.read().decode('utf-8'))
-except urllib.error.HTTPError as e:
-    print(f"Grist API Error: {e.code} - {e.read().decode('utf-8')}")
-    exit(1)
-
-# 5. Phir aakhir mein check karke sirf un purane rows ko delete karo jo ab source mein nahi hain
+# 4. Target table ke pehle se mojood saare records fetch karo (unki IDs ke sath)
+existing_records = []
 try:
     req_get_target = urllib.request.Request(records_url, headers={"Authorization": f"Bearer {api_key}"}, method="GET")
     with urllib.request.urlopen(req_get_target) as resp:
         target_data = json.loads(resp.read().decode('utf-8'))
-        ids_to_delete = []
-        for row in target_data.get('records', []):
-            sym = row.get('fields', {}).get('Symbol')
-            if sym and sym not in tickers:
-                ids_to_delete.append(row.get('id'))
-        
-        if ids_to_delete:
-            del_data = json.dumps(ids_to_delete).encode('utf-8')
+        existing_records = target_data.get('records', [])
+except Exception as e:
+    print(f"Warning fetching target records: {e}")
+
+update_records = []
+create_records = []
+
+# 5. Sequential Overwrite Logic:
+# Jitne incoming records hain, unhe pehli existing IDs par map kar do.
+for idx, rec in enumerate(records_to_save):
+    if idx < len(existing_records):
+        # Pehli existing IDs par overwrite (update) karo
+        ex_id = existing_records[idx]['id']
+        update_records.append({
+            "id": ex_id,
+            "fields": rec["fields"]
+        })
+    else:
+        # Agar naye records purane walon se zyada hain, toh naye create karo
+        create_records.append(rec)
+
+# Step A: Existing rows ko unhi IDs par overwrite karo
+if update_records:
+    try:
+        put_payload = json.dumps({"records": update_records}).encode('utf-8')
+        req_put = urllib.request.Request(
+            records_url,
+            data=put_payload,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="PUT"
+        )
+        with urllib.request.urlopen(req_put) as resp:
+            print("Successfully overwritten top rows sequentially.")
+    except urllib.error.HTTPError as e:
+        print(f"Error updating rows: {e.code} - {e.read().decode('utf-8')}")
+
+# Step B: Agar naye records zyada hain, toh niche naye create karo
+if create_records:
+    try:
+        post_payload = json.dumps({"records": create_records}).encode('utf-8')
+        req_post = urllib.request.Request(
+            records_url,
+            data=post_payload,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req_post) as resp:
+            print("Successfully created extra new rows.")
+    except urllib.error.HTTPError as e:
+        print(f"Error creating extra rows: {e.code} - {e.read().decode('utf-8')}")
+
+# Step C: Agar purane records zyada the aur naye kam hain, toh neeche ke bache hue sabhi records delete kar do
+if len(existing_records) > len(records_to_save):
+    excess_ids = [row['id'] for row in existing_records[len(records_to_save):]]
+    if excess_ids:
+        try:
+            del_payload = json.dumps(excess_ids).encode('utf-8')
             req_del = urllib.request.Request(
                 records_url,
-                data=del_data,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
-                },
+                data=del_payload,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 method="DELETE"
             )
-            with urllib.request.urlopen(req_del):
-                print(f"Cleaned up {len(ids_to_delete)} obsolete rows successfully after update.")
-except Exception as e:
-    print(f"Could not delete obsolete rows: {e}")
+            with urllib.request.urlopen(req_del) as resp:
+                print(f"Successfully deleted {len(excess_ids)} excess rows from the bottom.")
+        except urllib.error.HTTPError as e:
+            print(f"Error deleting excess rows: {e.code} - {e.read().decode('utf-8')}")
