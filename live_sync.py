@@ -4,7 +4,6 @@ import urllib.request
 import re
 import pandas as pd
 import yfinance as yf
-import urllib.parse
 
 # Load Grist environment configurations securely
 api_key = os.environ['GRIST_API_KEY']
@@ -98,7 +97,7 @@ if not records:
     print("Error: No valid records parsed from yfinance.")
     exit(1)
 
-print(f"Successfully parsed {len(records)} stocks. Pushing to Grist...")
+print(f"Successfully parsed {len(records)} stocks. Preparing Grist columns...")
 
 # 1. Fetch existing columns from Grist to compare
 cols_url = f"https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/columns"
@@ -156,7 +155,7 @@ if missing_cols:
         print(f"Error creating columns: {e.code} - {e.read().decode('utf-8')}")
         exit(1)
 
-# 4. Push records using PUT (Upsert matching on Symbol)
+# 4. Pehle naye records ko PUT (Upsert) karke update/insert karo
 records_url = f"https://docs.getgrist.com/api/docs/{doc_id}/tables/{table_id}/records"
 payload_data = json.dumps({"records": records}).encode('utf-8')
 
@@ -177,7 +176,7 @@ except urllib.error.HTTPError as e:
     print(f"Grist API Error: {e.code} - {e.read().decode('utf-8')}")
     exit(1)
 
-# 5. Delete old/unknown rows in target table that are not present in source tickers
+# 5. Phir aakhir mein check karke sirf un purane rows ko delete karo jo ab source mein nahi hain
 try:
     req_get_target = urllib.request.Request(records_url, headers={"Authorization": f"Bearer {api_key}"}, method="GET")
     with urllib.request.urlopen(req_get_target) as resp:
@@ -189,10 +188,17 @@ try:
                 ids_to_delete.append(row.get('id'))
         
         if ids_to_delete:
-            del_ids_str = json.dumps(ids_to_delete)
-            del_url = f"{records_url}?del={urllib.parse.quote(del_ids_str)}"
-            req_del = urllib.request.Request(del_url, headers={"Authorization": f"Bearer {api_key}"}, method="DELETE")
+            del_data = json.dumps(ids_to_delete).encode('utf-8')
+            req_del = urllib.request.Request(
+                records_url,
+                data=del_data,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                },
+                method="DELETE"
+            )
             with urllib.request.urlopen(req_del):
-                print(f"Cleaned up {len(ids_to_delete)} obsolete rows not found in the source table.")
+                print(f"Cleaned up {len(ids_to_delete)} obsolete rows successfully after update.")
 except Exception as e:
     print(f"Could not delete obsolete rows: {e}")
