@@ -1,0 +1,131 @@
+Name: NIFTY_500
+
+on:
+  schedule:
+    - cron: '30 19 * * *'  # 1:00 AM IST
+    - cron: '30 0 * * *'   # 6:00 AM IST
+    - cron: '30 2 * * *'   # 8:00 AM IST (Default scheduled run)
+  workflow_dispatch:
+    inputs:
+      csv_url:
+        description: 'Official CSV URL to fetch'
+        required: true
+        default: 'https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv'
+      table_name:
+        description: 'Supabase Table Name to sync into'
+        required: true
+        default: 'TRADING'
+
+jobs:
+  sync_index:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Repo
+      uses: actions/checkout@v3
+
+    - name: Fetch CSV and Add Timestamp
+      env:
+        CSV_URL: ${{ github.event.inputs.csv_url || 'https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv' }}
+      run: |
+        echo "Fetching from: $CSV_URL"
+        curl -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "$CSV_URL" > temp.csv
+        CURRENT_TIME=$(env TZ=Asia/Kolkata date "+%Y-%m-%d %H:%M:%S IST")
+        awk -v time="$CURRENT_TIME" 'NR==1 {print $0 ",Fetch_Time"} NR>1 {print $0 "," time}' temp.csv > target_list.csv
+        rm temp.csv
+
+    - name: Sync CSV Data to Supabase
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        SUPABASE_TABLE: ${{ github.event.inputs.table_name || 'TRADING' }}
+      run: |
+        python3 -c "
+        import csv, json, os, urllib.request, re
+
+        supabase_url = os.environ['SUPABASE_URL'].rstrip('/')
+        supabase_key = os.environ['SUPABASE_KEY']
+        table_name = os.environ['SUPABASE_TABLE']
+        print(f'Target Supabase Table: {table_name}')
+
+        # 1. Read headers and parse rows from CSV
+        with open('target_list.csv', mode='r', encoding='utf-8-sig') as f:
+            reader = csv.reader(f)
+            csv_headers = next(reader)
+            
+            col_mapping = {}
+            for idx, h in enumerate(csv_headers):
+                label = h.strip()
+                if not label: continue
+                
+                # Safe column ID matching Supabase/Postgres standards
+                safe_id = re.sub(r'[^a-zA-Z0-9]', '_', label)
+                if safe_id and safe_id[0].isdigit():
+                    safe_id = 'col_' + safe_id
+                col_mapping[idx] = safe_id
+
+            records = []
+            for row in reader:
+                if not row or not any(row): continue
+                fields = {}
+                has_data = False
+                for idx, col_id in col_mapping.items():
+                    if idx < len(row):
+                        val = row[idx].strip()
+                        fields[col_id] = val if val else None
+                        if val:
+                            has_data = True
+                if has_data:
+                    records.append(fields)
+
+        if not records:
+            print('Error: No valid records parsed from CSV.')
+            exit(1)
+
+        # 2. Supabase Overwrite: Delete old records first (optional, or use Upsert)
+        rest_url = f'{supabase_url}/rest/v1/{table_name}'
+        
+        # Delete existing rows (Supabase requires a filter like id=gt.0 or similar to delete all, or we clear table via DELETE query)
+        del_req = urllib.request.Request(
+            f'{rest_url}?id=neq.0', 
+            headers={
+                'apikey': supabase_key,
+                'Authorization': f'Bearer {supabase_key}',
+                'Content-Type': 'application/json',
+                'Prefer': 'return=minimal'
+            }, 
+            method='DELETE'
+        )
+        try:
+            with urllib.request.urlopen(del_req) as resp:
+                print('Cleared old rows from Supabase table.')
+        except Exception as e:
+            print(f'Note on clearing rows (table might be empty or missing filter): {e}')
+
+        # 3. Insert fresh records in batches of 100
+        for i in range(0, len(records), 100):
+            batch = records[i:i+100]
+            data = json.dumps(batch).encode('utf-8')
+            
+            req = urllib.request.Request(
+                rest_url, 
+                data=data, 
+                headers={
+                    'apikey': supabase_key,
+                    'Authorization': f'Bearer {supabase_key}',
+                    'Content-Type': 'application/json',
+                    'Prefer': 'return=minimal'
+                }, 
+                method='POST'
+            )
+            try:
+                with urllib.request.urlopen(req) as response:
+                    print(f'Batch {i//100 + 1} inserted successfully.')
+            except urllib.error.HTTPError as e:
+                print(f'Error inserting records: {e.code} - {e.read().decode(\"utf-8\")}')
+                exit(1)
+
+        print('Successfully synced CSV data to Supabase!')
+        "
+
+    - name: Clean up temporary file
+      run: rm -f target_list.csv
