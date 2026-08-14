@@ -1,4 +1,48 @@
-    - name: Single Table Sync (Atomic Update)
+name: SUPA
+
+on:
+  schedule:
+    - cron: '30 19 * * *'  # 1:00 AM IST
+    - cron: '30 0 * * *'   # 6:00 AM IST
+    - cron: '30 2 * * *'   # 8:00 AM IST (Default scheduled run)
+  workflow_dispatch:
+    inputs:
+      csv_url:
+        description: 'Official CSV URL to fetch'
+        required: true
+        default: 'https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv'
+      table_name:
+        description: 'Supabase Table Name to sync into'
+        required: true
+        default: 'TRADING'
+
+jobs:
+  sync_index:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Repo
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install Dependencies
+      run: |
+        pip install psycopg2-binary
+
+    - name: Fetch CSV and Add Timestamp
+      env:
+        CSV_URL: ${{ github.event.inputs.csv_url || 'https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv' }}
+      run: |
+        echo "Fetching from: $CSV_URL"
+        curl -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "$CSV_URL" > temp.csv
+        CURRENT_TIME=$(env TZ=Asia/Kolkata date "+%Y-%m-%d %H:%M:%S IST")
+        awk -v time="$CURRENT_TIME" 'NR==1 {print $0 ",Fetch_Time"} NR>1 {print $0 "," time}' temp.csv > target_list.csv
+        rm temp.csv
+
+    - name: Atomic Single-Table Sync with Safety Guard & Auto-Columns
       env:
         SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         SUPABASE_TABLE: ${{ github.event.inputs.table_name || 'TRADING' }}
@@ -9,42 +53,96 @@
 
         db_url = os.environ['SUPABASE_DB_URL'].strip()
         table_name = os.environ['SUPABASE_TABLE']
-        
-        # 1. Read and Validate CSV
+        print(f'Target Supabase Table: {table_name}')
+
+        # 1. Read and validate CSV headers and rows
         rows_data = []
         safe_headers = []
         with open('target_list.csv', mode='r', encoding='utf-8-sig') as f:
             reader = csv.reader(f)
-            csv_headers = next(reader)
-            safe_headers = [re.sub(r'[^a-zA-Z0-9]', '_', h.strip()).lower() for h in csv_headers]
-            for row in reader:
-                if any(row): rows_data.append(tuple(row))
+            try:
+                csv_headers = next(reader)
+            except StopIteration:
+                print('Error: CSV file is empty.')
+                exit(1)
+            
+            col_mapping = {}
+            for idx, h in enumerate(csv_headers):
+                label = h.strip()
+                if not label: continue
+                
+                safe_id = re.sub(r'[^a-zA-Z0-9]', '_', label).lower()
+                if safe_id and safe_id[0].isdigit():
+                    safe_id = 'col_' + safe_id
+                col_mapping[idx] = safe_id
+                safe_headers.append(safe_id)
 
-        # AGAR DATA NAHI HAI, TOH SCRIPT YAHIN RUK JAYEGI (Database safe rahega)
+            for row in reader:
+                if not row or not any(row): continue
+                row_values = []
+                has_data = False
+                for idx in col_mapping.keys():
+                    if idx < len(row):
+                        val = row[idx].strip()
+                        row_values.append(val if val else None)
+                        if val: has_data = True
+                    else:
+                        row_values.append(None)
+                if has_data:
+                    rows_data.append(tuple(row_values))
+
+        # SAFETY GUARD: If source has no rows, stop execution so old data remains untouched!
         if not rows_data:
-            print('No valid data in CSV, skipping update.')
+            print('Error: No valid records parsed from CSV. Skipping execution to protect existing table data.')
             exit(1)
 
-        # 2. Sync inside one transaction
+        # 2. Connect via Pooler (Port 6543)
         conn = psycopg2.connect(db_url)
         cur = conn.cursor()
+
         try:
-            # Purana data tabhi delete hoga agar upar wala code success hua
-            print(f'Updating table: {table_name}')
-            cur.execute(f'TRUNCATE TABLE {table_name} RESTART IDENTITY;')
-            
-            # Insert logic
-            cols_str = ', '.join([f'\"{c}\"' for c in safe_headers])
-            insert_query = f'INSERT INTO {table_name} ({cols_str}) VALUES (' + ','.join(['%s']*len(safe_headers)) + ')'
-            cur.executemany(insert_query, rows_data)
-            
+            # 3. Create Table if not exists
+            cur.execute(f'CREATE TABLE IF NOT EXISTS {table_name} (id SERIAL PRIMARY KEY);')
             conn.commit()
-            print('Sync complete. Data updated successfully.')
+
+            # 4. Check missing columns and create them automatically in lowercase
+            cur.execute('''
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = %s;
+            ''', (table_name.lower(),))
+            existing_cols = [row[0] for row in cur.fetchall()]
+
+            for col in safe_headers:
+                if col not in existing_cols:
+                    print(f'[Auto-Create] Missing column found, adding to Supabase: {col}')
+                    cur.execute(f'ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS \"{col}\" TEXT;')
+                    conn.commit()
+
+            # 5. ATOMIC UPDATE: Truncate and reset IDs to 1 ONLY when valid source data exists
+            print('Clearing old records and resetting ID sequence to 1...')
+            cur.execute(f'TRUNCATE TABLE {table_name} RESTART IDENTITY;')
+
+            # 6. Insert fresh data securely
+            cols_string = ', '.join([f'\"{c}\"' for c in safe_headers])
+            placeholders = ', '.join(['%s'] * len(safe_headers))
+            insert_query = f'INSERT INTO {table_name} ({cols_string}) VALUES ({placeholders});'
+
+            print('Inserting fresh data...')
+            cur.executemany(insert_query, rows_data)
+            conn.commit()
+
+            print('Successfully synced CSV data. Table updated and IDs reset from 1!')
+
         except Exception as e:
             conn.rollback()
-            print(f'Error occurred, database unchanged: {e}')
+            print(f'Error during database sync, transaction rolled back safely. Old data is preserved: {e}')
             exit(1)
+
         finally:
             cur.close()
             conn.close()
         "
+
+    - name: Clean up temporary file
+      run: rm -f target_list.csv
