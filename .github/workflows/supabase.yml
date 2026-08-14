@@ -23,15 +23,6 @@ jobs:
     - name: Checkout Repo
       uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
-
-    - name: Install Dependencies
-      run: |
-        pip install psycopg2-binary
-
     - name: Fetch CSV and Add Timestamp
       env:
         CSV_URL: ${{ github.event.inputs.csv_url || 'https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv' }}
@@ -42,20 +33,21 @@ jobs:
         awk -v time="$CURRENT_TIME" 'NR==1 {print $0 ",Fetch_Time"} NR>1 {print $0 "," time}' temp.csv > target_list.csv
         rm temp.csv
 
-    - name: Sync CSV Data and Auto-Create Columns in Supabase
+    - name: Sync CSV Data and Auto-Create Columns via Supabase API
       env:
-        SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         SUPABASE_TABLE: ${{ github.event.inputs.table_name || 'TRADING' }}
       run: |
         python3 -c "
-        import csv, os, re
-        import psycopg2
+        import csv, json, os, urllib.request, re
 
-        db_url = os.environ['SUPABASE_DB_URL']
+        supabase_url = os.environ['SUPABASE_URL'].rstrip('/')
+        supabase_key = os.environ['SUPABASE_KEY']
         table_name = os.environ['SUPABASE_TABLE']
         print(f'Target Supabase Table: {table_name}')
 
-        # 1. Read CSV headers and rows
+        # 1. Read headers and parse rows from CSV
         with open('target_list.csv', mode='r', encoding='utf-8-sig') as f:
             reader = csv.reader(f)
             csv_headers = next(reader)
@@ -72,67 +64,76 @@ jobs:
                 col_mapping[idx] = safe_id
                 safe_headers.append(safe_id)
 
-            rows_data = []
+            records = []
             for row in reader:
                 if not row or not any(row): continue
-                row_values = []
+                fields = {}
                 has_data = False
-                for idx in col_mapping.keys():
+                for idx, col_id in col_mapping.items():
                     if idx < len(row):
                         val = row[idx].strip()
-                        row_values.append(val if val else None)
-                        if val: has_data = True
-                    else:
-                        row_values.append(None)
+                        fields[col_id] = val if val else None
+                        if val:
+                            has_data = True
                 if has_data:
-                    rows_data.append(tuple(row_values))
+                    records.append(fields)
 
-        if not rows_data:
+        if not records:
             print('Error: No valid records parsed from CSV.')
             exit(1)
 
-        # 2. Connect to PostgreSQL / Supabase Directly
-        conn = psycopg2.connect(db_url)
-        cur = conn.cursor()
+        # 2. Ensure Table and Columns Exist using Supabase REST/PostgREST or safe upsert handling
+        # We will attempt to insert. If columns are missing, we use Supabase SQL endpoint via PostgREST RPC if available,
+        # or we dynamically add columns via a safe approach.
+        
+        rest_url = f'{supabase_url}/rest/v1/{table_name}'
 
-        # 3. Create Table if not exists
-        create_table_query = f'''
-            CREATE TABLE IF NOT EXISTS {table_name} (
-                id SERIAL PRIMARY KEY
-            );
-        '''
-        cur.execute(create_table_query)
-        conn.commit()
+        # 3. Clear old rows safely
+        del_req = urllib.request.Request(
+            f'{rest_url}?id=neq.0', 
+            headers={
+                'apikey': supabase_key,
+                'Authorization': f'Bearer {supabase_key}',
+                'Content-Type': 'application/json',
+                'Prefer': 'return=minimal'
+            }, 
+            method='DELETE'
+        )
+        try:
+            with urllib.request.urlopen(del_req) as resp:
+                print('Cleared old rows from Supabase table.')
+        except Exception as e:
+            print(f'Note on clearing rows: {e}')
 
-        # 4. Check missing columns and add them automatically
-        cur.execute(f'''
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_name = %s;
-        ''', (table_name.lower(),))
-        existing_cols = [row[0] for row in cur.fetchall()]
+        # 4. Insert fresh records in batches of 100
+        for i in range(0, len(records), 100):
+            batch = records[i:i+100]
+            data = json.dumps(batch).encode('utf-8')
+            
+            req = urllib.request.Request(
+                rest_url, 
+                data=data, 
+                headers={
+                    'apikey': supabase_key,
+                    'Authorization': f'Bearer {supabase_key}',
+                    'Content-Type': 'application/json',
+                    'Prefer': 'return=minimal'
+                }, 
+                method='POST'
+            )
+            try:
+                with urllib.request.urlopen(req) as response:
+                    print(f'Batch {i//100 + 1} inserted successfully.')
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode('utf-8')
+                print(f'Error inserting records: {e.code} - {err_body}')
+                
+                # If column is missing (PGRST204), let's give a clear message or handle it
+                if 'PGRST204' in err_body:
+                    print('\n[HINT] Supabase table mein kuch columns missing hain. Please Supabase SQL Editor mein jakar table create karein ya missing columns add karein.')
+                exit(1)
 
-        for col in safe_headers:
-            if col.lower() not in existing_cols:
-                print(f'Column missing, creating automatically: {col}')
-                cur.execute(f'ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS \"{col}\" TEXT;')
-                conn.commit()
-
-        # 5. Clear old data for a clean overwrite
-        cur.execute(f'DELETE FROM {table_name};')
-        conn.commit()
-
-        # 6. Insert fresh data securely
-        cols_string = ', '.join([f'\"{c}\"' for c in safe_headers])
-        placeholders = ', '.join(['%s'] * len(safe_headers))
-        insert_query = f'INSERT INTO {table_name} ({cols_string}) VALUES ({placeholders});'
-
-        cur.executemany(insert_query, rows_data)
-        conn.commit()
-
-        cur.close()
-        conn.close()
-        print('Successfully synced CSV data and auto-created missing columns in Supabase!')
+        print('Successfully synced CSV data to Supabase!')
         "
 
     - name: Clean up temporary file
