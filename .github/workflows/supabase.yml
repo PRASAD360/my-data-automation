@@ -51,12 +51,11 @@ jobs:
         import csv, os, re
         import psycopg2
 
-        # .strip() will automatically remove any hidden spaces or newlines from the secret
         db_url = os.environ['SUPABASE_DB_URL'].strip()
         table_name = os.environ['SUPABASE_TABLE']
         print(f'Target Supabase Table: {table_name}')
 
-        # 1. Read CSV headers and rows
+        # 1. Read CSV headers and rows (converted to lowercase for zero-error compatibility)
         with open('target_list.csv', mode='r', encoding='utf-8-sig') as f:
             reader = csv.reader(f)
             csv_headers = next(reader)
@@ -67,7 +66,7 @@ jobs:
                 label = h.strip()
                 if not label: continue
                 
-                safe_id = re.sub(r'[^a-zA-Z0-9]', '_', label)
+                safe_id = re.sub(r'[^a-zA-Z0-9]', '_', label).lower()
                 if safe_id and safe_id[0].isdigit():
                     safe_id = 'col_' + safe_id
                 col_mapping[idx] = safe_id
@@ -100,7 +99,7 @@ jobs:
         cur.execute(f'CREATE TABLE IF NOT EXISTS {table_name} (id SERIAL PRIMARY KEY);')
         conn.commit()
 
-        # 4. Check missing columns and create them automatically!
+        # 4. Check missing columns and create them automatically in lowercase
         cur.execute('''
             SELECT column_name 
             FROM information_schema.columns 
@@ -109,7 +108,7 @@ jobs:
         existing_cols = [row[0] for row in cur.fetchall()]
 
         for col in safe_headers:
-            if col.lower() not in existing_cols:
+            if col not in existing_cols:
                 print(f'[Auto-Create] Missing column found, adding to Supabase: {col}')
                 cur.execute(f'ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS \"{col}\" TEXT;')
                 conn.commit()
