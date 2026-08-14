@@ -64,98 +64,95 @@ jobs:
             cur.execute('SELECT symbol FROM trading;')
             rows = cur.fetchall()
             symbols = [row[0].strip() for row in rows if row[0]]
-        except Exception as e:
-            print(f'Error reading symbols from trading table: {e}')
-            exit(1)
+            
+            if not symbols:
+                print('Error: No symbols found in TRADING table.')
+                exit(1)
 
-        if not symbols:
-            print('Error: No symbols found in TRADING table.')
-            exit(1)
+            # 2. Fetch data via yfinance based on user columns
+            current_time = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S IST')
+            all_records = []
 
-        # 2. Fetch data via yfinance based on user columns
-        current_time = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S IST')
-        all_records = []
-
-        for sym in symbols:
-            yf_sym = sym if '.' in sym else f'{sym}.NS'
-            try:
-                df = yf.Ticker(yf_sym).history(period='1d')
-                if df.empty: continue
-                
-                latest = df.iloc[-1]
-                record = {
-                    'fetch_time': current_time,
-                    'symbol': sym
-                }
-                
-                for col in user_cols:
-                    col_cap = col.capitalize()
-                    if col_cap in latest:
-                        val = latest[col_cap]
-                        if col == 'volume':
-                            record[col] = str(int(val))
+            for sym in symbols:
+                yf_sym = sym if '.' in sym else f'{sym}.NS'
+                try:
+                    df = yf.Ticker(yf_sym).history(period='1d')
+                    if df.empty: continue
+                    
+                    latest = df.iloc[-1]
+                    record = {
+                        'fetch_time': current_time,
+                        'symbol': sym
+                    }
+                    
+                    for col in user_cols:
+                        col_cap = col.capitalize()
+                        if col_cap in latest:
+                            val = latest[col_cap]
+                            if col == 'volume':
+                                record[col] = str(int(val))
+                            else:
+                                record[col] = str(round(float(val), 2))
                         else:
-                            record[col] = str(round(float(val), 2))
-                    else:
-                        record[col] = None
+                            record[col] = None
 
-                all_records.append(record)
-            except Exception as e:
-                print(f'Error fetching {yf_sym}: {e}')
+                    all_records.append(record)
+                except Exception as e:
+                    print(f'Error fetching {yf_sym}: {e}')
 
-        if not all_records:
-            print('Error: No records fetched.')
-            exit(1)
+            if not all_records:
+                print('Error: No records fetched.')
+                exit(1)
 
-        # 3. Create table & ensure exact columns exist
-        cur.execute(f'CREATE TABLE IF NOT EXISTS {table_name} (id SERIAL PRIMARY KEY);')
-        conn.commit()
+            # 3. Create table & ensure exact columns exist
+            cur.execute(f'CREATE TABLE IF NOT EXISTS {table_name} (id SERIAL PRIMARY KEY);')
+            conn.commit()
 
-        cur.execute('''
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_name = %s;
-        ''', (table_name.lower(),))
-        existing_cols = [row[0] for row in cur.fetchall()]
+            cur.execute('''
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = %s;
+            ''', (table_name.lower(),))
+            existing_cols = [row[0] for row in cur.fetchall()]
 
-        for col in ordered_cols:
-            if col not in existing_cols:
-                print(f'[Auto-Create] Adding column: {col}')
-                cur.execute(f'ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS \"{col}\" TEXT;')
-                conn.commit()
+            for col in ordered_cols:
+                if col not in existing_cols:
+                    print(f'[Auto-Create] Adding column: {col}')
+                    cur.execute(f'ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS \"{col}\" TEXT;')
+                    conn.commit()
 
-        # 4. Truncate table and reset IDs to 1
-        print(f'Refreshing {table_name} and resetting IDs to 1...')
-        cur.execute(f'TRUNCATE TABLE {table_name} RESTART IDENTITY;')
+            # 4. Truncate table and reset IDs to 1
+            print(f'Refreshing {table_name} and resetting IDs to 1...')
+            cur.execute(f'TRUNCATE TABLE {table_name} RESTART IDENTITY;')
 
-        # 5. Insert data securely
-        cols_string = ', '.join([f'\"{c}\"' for c in ordered_cols])
-        placeholders = ', '.join(['%s'] * len(ordered_cols))
-        insert_query = f'INSERT INTO {table_name} ({cols_string}) VALUES ({placeholders});'
+            # 5. Insert data securely
+            cols_string = ', '.join([f'\"{c}\"' for c in ordered_cols])
+            placeholders = ', '.join(['%s'] * len(ordered_cols))
+            insert_query = f'INSERT INTO {table_name} ({cols_string}) VALUES ({placeholders});'
 
-        rows_data = []
-        for rec in all_records:
-            row_vals = [rec.get(col) for col in ordered_cols]
-            rows_data.append(tuple(row_vals))
+            rows_data = []
+            for rec in all_records:
+                row_vals = [rec.get(col) for col in ordered_cols]
+                rows_data.append(tuple(row_vals))
 
-        cur.executemany(insert_query, rows_data)
-        conn.commit()
+            cur.executemany(insert_query, rows_data)
+            conn.commit()
 
-        # 6. AFTER DATA IS SET: Delete any extra/unwanted columns from the table
-        cur.execute('''
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_name = %s;
-        ''', (table_name.lower(),))
-        current_db_cols = [row[0] for row in cur.fetchall()]
+            # 6. AFTER DATA IS SET: Delete any extra/unwanted columns from the table
+            cur.execute('''
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = %s;
+            ''', (table_name.lower(),))
+            current_db_cols = [row[0] for row in cur.fetchall()]
 
-        for col in current_db_cols:
-            if col not in ordered_cols and col != 'id':
-                print(f'[Auto-Drop] Removing extra column after data set: {col}')
-                cur.execute(f'ALTER TABLE {table_name} DROP COLUMN \"{col}\";')
-                conn.commit()
+            for col in current_db_cols:
+                if col not in ordered_cols and col != 'id':
+                    print(f'[Auto-Drop] Removing extra column after data set: {col}')
+                    cur.execute(f'ALTER TABLE {table_name} DROP COLUMN \"{col}\";')
+                    conn.commit()
 
-        print(f'Successfully completed sync and cleaned up extra columns in table: {table_name}!')
+            print(f'Successfully completed sync and cleaned up extra columns in table: {table_name}!')
 
         except Exception as e:
             conn.rollback()
