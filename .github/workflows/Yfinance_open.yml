@@ -14,7 +14,7 @@ on:
       data_metric:
         description: 'Which metric to fetch? (Close, Open, High, Low, Volume)'
         required: true
-        default: 'Close'
+        default: 'Open'
 
 jobs:
   sync_timeseries:
