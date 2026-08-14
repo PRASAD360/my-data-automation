@@ -51,7 +51,8 @@ jobs:
         import csv, os, re
         import psycopg2
 
-        db_url = os.environ['SUPABASE_DB_URL']
+        # .strip() will automatically remove any hidden spaces or newlines from the secret
+        db_url = os.environ['SUPABASE_DB_URL'].strip()
         table_name = os.environ['SUPABASE_TABLE']
         print(f'Target Supabase Table: {table_name}')
 
