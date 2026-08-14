@@ -10,7 +10,7 @@ on:
       new_table_name:
         description: 'Table Name for Time-Series Data'
         required: true
-        default: 'historical_close_data'
+        default: 'historical_Open_data'
       data_metric:
         description: 'Which metric to fetch? (Close, Open, High, Low, Volume)'
         required: true
