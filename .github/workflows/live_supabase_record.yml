@@ -107,10 +107,18 @@ jobs:
             ''', (table_name.lower(),))
             existing_cols = [row[0] for row in cur.fetchall()]
 
+            # Auto-create missing columns
             for col in ordered_cols:
                 if col not in existing_cols:
                     print(f'[Auto-Create] Adding column: {col}')
                     cur.execute(f'ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS \"{col}\" TEXT;')
+                    conn.commit()
+
+            # Auto-Drop extra/unwanted columns (keeping 'id' safe)
+            for col in existing_cols:
+                if col not in ordered_cols and col != 'id':
+                    print(f'[Auto-Drop] Removing extra column: {col}')
+                    cur.execute(f'ALTER TABLE {table_name} DROP COLUMN \"{col}\";')
                     conn.commit()
 
             # 4. Truncate table and reset IDs to 1
@@ -130,7 +138,7 @@ jobs:
             cur.executemany(insert_query, rows_data)
             conn.commit()
 
-            print(f'Successfully saved OHLCV data into table: {table_name}!')
+            print(f'Successfully saved OHLCV data and cleaned up extra columns in table: {table_name}!')
 
         except Exception as e:
             conn.rollback()
