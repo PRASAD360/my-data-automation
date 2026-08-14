@@ -1,0 +1,145 @@
+name: YFINANCE_TIMESERIES_SYNC
+
+on:
+  schedule:
+    - cron: '30 19 * * *'  # 1:00 AM IST
+    - cron: '30 0 * * *'   # 6:00 AM IST
+    - cron: '30 2 * * *'   # 8:00 AM IST
+  workflow_dispatch:
+    inputs:
+      new_table_name:
+        description: 'Table Name for Time-Series Data'
+        required: true
+        default: 'historical_close_data'
+      data_metric:
+        description: 'Which metric to fetch? (Close, Open, High, Low, Volume)'
+        required: true
+        default: 'Close'
+
+jobs:
+  sync_timeseries:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Repo
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install Dependencies
+      run: |
+        pip install psycopg2-binary yfinance pandas pytz
+
+    - name: Fetch Single Metric & Append New Row
+      env:
+        SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        NEW_TABLE_NAME: ${{ github.event.inputs.new_table_name || 'historical_close_data' }}
+        DATA_METRIC: ${{ github.event.inputs.data_metric || 'Close' }}
+      run: |
+        python3 -c "
+        import os, re
+        from datetime import datetime
+        import psycopg2
+        import pytz
+        import yfinance as yf
+
+        db_url = os.environ['SUPABASE_DB_URL'].strip()
+        table_name = os.environ['NEW_TABLE_NAME'].strip().lower()
+        user_metric = os.environ['DATA_METRIC'].strip().capitalize() # e.g., 'Close', 'Volume'
+
+        print(f'Target Table: {table_name}')
+        print(f'Fetching Metric: {user_metric} for all symbols')
+
+        # 1. Connect and fetch symbols from trading table
+        conn = psycopg2.connect(db_url)
+        cur = conn.cursor()
+
+        try:
+            cur.execute('SELECT symbol FROM trading;')
+            rows = cur.fetchall()
+            symbols = [row[0].strip() for row in rows if row[0]]
+            
+            if not symbols:
+                print('Error: No symbols found in TRADING table.')
+                exit(1)
+
+            # 2. Fetch data via yfinance (Only the selected metric)
+            current_time = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S IST')
+            
+            # This dictionary will become our SINGLE new row
+            record = {'fetch_time': current_time}
+            ordered_cols = ['fetch_time']
+
+            for sym in symbols:
+                yf_sym = sym if '.' in sym else f'{sym}.NS'
+                safe_col_name = re.sub(r'[^a-zA-Z0-9]', '_', sym).lower()
+                ordered_cols.append(safe_col_name)
+                
+                try:
+                    df = yf.Ticker(yf_sym).history(period='1d')
+                    if not df.empty and user_metric in df.columns:
+                        val = df.iloc[-1][user_metric]
+                        if user_metric == 'Volume':
+                            record[safe_col_name] = str(int(val))
+                        else:
+                            record[safe_col_name] = str(round(float(val), 2))
+                    else:
+                        record[safe_col_name] = None
+                except Exception as e:
+                    print(f'Error fetching {yf_sym}: {e}')
+                    record[safe_col_name] = None
+
+            # 3. Create table (if not exists) with id column
+            cur.execute(f'CREATE TABLE IF NOT EXISTS {table_name} (id SERIAL PRIMARY KEY);')
+            conn.commit()
+
+            # Ensure all symbol columns exist in the database
+            cur.execute('''
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = %s;
+            ''', (table_name.lower(),))
+            existing_cols = [row[0] for row in cur.fetchall()]
+
+            for col in ordered_cols:
+                if col not in existing_cols:
+                    print(f'[Auto-Create] Adding new symbol column: {col}')
+                    cur.execute(f'ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS \"{col}\" TEXT;')
+                    conn.commit()
+
+            # 4. APPEND DATA (We do NOT truncate the table here)
+            print(f'Appending new row to {table_name}...')
+            cols_string = ', '.join([f'\"{c}\"' for c in ordered_cols])
+            placeholders = ', '.join(['%s'] * len(ordered_cols))
+            insert_query = f'INSERT INTO {table_name} ({cols_string}) VALUES ({placeholders});'
+            
+            row_vals = tuple([record.get(col) for col in ordered_cols])
+            cur.execute(insert_query, row_vals)
+            conn.commit()
+
+            # 5. AFTER DATA IS SET: Delete extra columns (if a symbol was removed from TRADING)
+            cur.execute('''
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = %s;
+            ''', (table_name.lower(),))
+            current_db_cols = [row[0] for row in cur.fetchall()]
+
+            for col in current_db_cols:
+                if col not in ordered_cols and col != 'id':
+                    print(f'[Auto-Drop] Removing old symbol column: {col}')
+                    cur.execute(f'ALTER TABLE {table_name} DROP COLUMN \"{col}\";')
+                    conn.commit()
+
+            print(f'Successfully appended new time-series data for metric [{user_metric}]!')
+
+        except Exception as e:
+            conn.rollback()
+            print(f'Database error: {e}')
+            exit(1)
+        finally:
+            cur.close()
+            conn.close()
+        "
