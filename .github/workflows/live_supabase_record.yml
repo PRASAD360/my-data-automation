@@ -1,19 +1,19 @@
-name: YFINANCE_OHLCV_SYNC
+name: YFINANCE_CUSTOM_COLUMNS_SYNC
 
 on:
-  schedule:
-    - cron: '30 19 * * *'  # 1:00 AM IST
-    - cron: '30 0 * * *'   # 6:00 AM IST
-    - cron: '30 2 * * *'   # 8:00 AM IST
   workflow_dispatch:
     inputs:
       new_table_name:
-        description: 'New Supabase Table Name for OHLCV Data'
+        description: 'Supabase Table Name'
         required: true
         default: 'live_ohlcv'
+      columns_to_fetch:
+        description: 'Comma-separated columns to fetch (e.g. open, high, low, close, volume)'
+        required: true
+        default: 'open, high, low, close, volume'
 
 jobs:
-  sync_ohlcv:
+  sync_custom:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout Repo
@@ -28,10 +28,11 @@ jobs:
       run: |
         pip install psycopg2-binary yfinance pandas pytz
 
-    - name: Pull OHLCV via yfinance & Sync to New Table
+    - name: Fetch Custom Columns & Clean Extra Table Columns
       env:
         SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         NEW_TABLE_NAME: ${{ github.event.inputs.new_table_name || 'live_ohlcv' }}
+        COLUMNS_TO_FETCH: ${{ github.event.inputs.columns_to_fetch || 'open, high, low, close, volume' }}
       run: |
         python3 -c "
         import os
@@ -42,7 +43,18 @@ jobs:
 
         db_url = os.environ['SUPABASE_DB_URL'].strip()
         table_name = os.environ['NEW_TABLE_NAME'].strip().lower()
+        raw_cols = os.environ['COLUMNS_TO_FETCH']
+
+        # Parse user-defined columns from input
+        user_cols = [c.strip().lower() for c in raw_cols.split(',') if c.strip()]
+        if not user_cols:
+            print('Error: No columns provided in input.')
+            exit(1)
+
+        # Mandatory first columns
+        ordered_cols = ['fetch_time', 'symbol'] + user_cols
         print(f'Target Table: {table_name}')
+        print(f'Target Columns: {ordered_cols}')
 
         # 1. Connect and fetch symbols from trading table
         conn = psycopg2.connect(db_url)
@@ -60,31 +72,33 @@ jobs:
             print('Error: No symbols found in TRADING table.')
             exit(1)
 
-        print(f'Found symbols: {symbols}')
-
-        # 2. Fetch OHLCV data using yfinance
+        # 2. Fetch data via yfinance based on user columns
         current_time = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S IST')
         all_records = []
 
         for sym in symbols:
             yf_sym = sym if '.' in sym else f'{sym}.NS'
-            print(f'Fetching OHLCV for: {yf_sym}')
             try:
                 df = yf.Ticker(yf_sym).history(period='1d')
-                if df.empty:
-                    print(f'No data found for {yf_sym}')
-                    continue
+                if df.empty: continue
                 
                 latest = df.iloc[-1]
                 record = {
                     'fetch_time': current_time,
-                    'symbol': sym,
-                    'open': str(round(latest['Open'], 2)),
-                    'high': str(round(latest['High'], 2)),
-                    'low': str(round(latest['Low'], 2)),
-                    'close': str(round(latest['Close'], 2)),
-                    'volume': str(int(latest['Volume']))
+                    'symbol': sym
                 }
+                
+                for col in user_cols:
+                    col_cap = col.capitalize()
+                    if col_cap in latest:
+                        val = latest[col_cap]
+                        if col == 'volume':
+                            record[col] = str(int(val))
+                        else:
+                            record[col] = str(round(float(val), 2))
+                    else:
+                        record[col] = None
+
                 all_records.append(record)
             except Exception as e:
                 print(f'Error fetching {yf_sym}: {e}')
@@ -93,52 +107,55 @@ jobs:
             print('Error: No records fetched.')
             exit(1)
 
-        ordered_cols = ['fetch_time', 'symbol', 'open', 'high', 'low', 'close', 'volume']
+        # 3. Create table & ensure exact columns exist
+        cur.execute(f'CREATE TABLE IF NOT EXISTS {table_name} (id SERIAL PRIMARY KEY);')
+        conn.commit()
 
-        try:
-            # 3. Create new table if not exists
-            cur.execute(f'CREATE TABLE IF NOT EXISTS {table_name} (id SERIAL PRIMARY KEY);')
-            conn.commit()
+        cur.execute('''
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = %s;
+        ''', (table_name.lower(),))
+        existing_cols = [row[0] for row in cur.fetchall()]
 
-            cur.execute('''
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name = %s;
-            ''', (table_name.lower(),))
-            existing_cols = [row[0] for row in cur.fetchall()]
+        for col in ordered_cols:
+            if col not in existing_cols:
+                print(f'[Auto-Create] Adding column: {col}')
+                cur.execute(f'ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS \"{col}\" TEXT;')
+                conn.commit()
 
-            # Auto-create missing columns
-            for col in ordered_cols:
-                if col not in existing_cols:
-                    print(f'[Auto-Create] Adding column: {col}')
-                    cur.execute(f'ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS \"{col}\" TEXT;')
-                    conn.commit()
+        # 4. Truncate table and reset IDs to 1
+        print(f'Refreshing {table_name} and resetting IDs to 1...')
+        cur.execute(f'TRUNCATE TABLE {table_name} RESTART IDENTITY;')
 
-            # Auto-Drop extra/unwanted columns (keeping 'id' safe)
-            for col in existing_cols:
-                if col not in ordered_cols and col != 'id':
-                    print(f'[Auto-Drop] Removing extra column: {col}')
-                    cur.execute(f'ALTER TABLE {table_name} DROP COLUMN \"{col}\";')
-                    conn.commit()
+        # 5. Insert data securely
+        cols_string = ', '.join([f'\"{c}\"' for c in ordered_cols])
+        placeholders = ', '.join(['%s'] * len(ordered_cols))
+        insert_query = f'INSERT INTO {table_name} ({cols_string}) VALUES ({placeholders});'
 
-            # 4. Truncate table and reset IDs to 1
-            print(f'Refreshing {table_name} and resetting IDs to 1...')
-            cur.execute(f'TRUNCATE TABLE {table_name} RESTART IDENTITY;')
+        rows_data = []
+        for rec in all_records:
+            row_vals = [rec.get(col) for col in ordered_cols]
+            rows_data.append(tuple(row_vals))
 
-            # 5. Insert data securely
-            cols_string = ', '.join([f'\"{c}\"' for c in ordered_cols])
-            placeholders = ', '.join(['%s'] * len(ordered_cols))
-            insert_query = f'INSERT INTO {table_name} ({cols_string}) VALUES ({placeholders});'
+        cur.executemany(insert_query, rows_data)
+        conn.commit()
 
-            rows_data = []
-            for rec in all_records:
-                row_vals = [rec.get(col) for col in ordered_cols]
-                rows_data.append(tuple(row_vals))
+        # 6. AFTER DATA IS SET: Delete any extra/unwanted columns from the table
+        cur.execute('''
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = %s;
+        ''', (table_name.lower(),))
+        current_db_cols = [row[0] for row in cur.fetchall()]
 
-            cur.executemany(insert_query, rows_data)
-            conn.commit()
+        for col in current_db_cols:
+            if col not in ordered_cols and col != 'id':
+                print(f'[Auto-Drop] Removing extra column after data set: {col}')
+                cur.execute(f'ALTER TABLE {table_name} DROP COLUMN \"{col}\";')
+                conn.commit()
 
-            print(f'Successfully saved OHLCV data and cleaned up extra columns in table: {table_name}!')
+        print(f'Successfully completed sync and cleaned up extra columns in table: {table_name}!')
 
         except Exception as e:
             conn.rollback()
