@@ -20,7 +20,7 @@ jobs:
       uses: actions/checkout@v3
 
     - name: Set up Python
-      uses: setup-python@v4
+      uses: actions/setup-python@v4
       with:
         python-version: '3.10'
 
@@ -67,7 +67,6 @@ jobs:
         all_records = []
 
         for sym in symbols:
-            # Append .NS for Indian NSE stocks if not already present
             yf_sym = sym if '.' in sym else f'{sym}.NS'
             print(f'Fetching live data for: {yf_sym}')
             try:
@@ -77,7 +76,6 @@ jobs:
                     print(f'Skipping {yf_sym}, insufficient info returned.')
                     continue
 
-                # Prepare record with fetch_time and symbol first
                 record = {
                     'fetch_time': current_time,
                     'symbol': sym
@@ -97,51 +95,48 @@ jobs:
             print('Error: No live records fetched from yfinance.')
             exit(1)
 
-        # Determine all unique columns across all fetched stocks
         all_keys = set()
         for rec in all_records:
             all_keys.update(rec.keys())
 
-        # Ensure fetch_time and symbol come first
         ordered_cols = ['fetch_time', 'symbol'] + sorted([k for k in all_keys if k not in ['fetch_time', 'symbol']])
 
-        # 3. Create New Table if it doesn't exist
-        cur.execute(f'CREATE TABLE IF NOT EXISTS {table_name} (id SERIAL PRIMARY KEY);')
-        conn.commit()
+        try:
+            # 3. Create New Table if it doesn't exist
+            cur.execute(f'CREATE TABLE IF NOT EXISTS {table_name} (id SERIAL PRIMARY KEY);')
+            conn.commit()
 
-        # Check existing columns in the new table
-        cur.execute('''
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_name = %s;
-        ''', (table_name.lower(),))
-        existing_cols = [row[0] for row in cur.fetchall()]
+            cur.execute('''
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = %s;
+            ''', (table_name.lower(),))
+            existing_cols = [row[0] for row in cur.fetchall()]
 
-        # Auto-create missing columns dynamically
-        for col in ordered_cols:
-            if col not in existing_cols:
-                print(f'[Auto-Create] Adding column to {table_name}: {col}')
-                cur.execute(f'ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS \"{col}\" TEXT;')
-                conn.commit()
+            for col in ordered_cols:
+                if col not in existing_cols:
+                    print(f'[Auto-Create] Adding column to {table_name}: {col}')
+                    cur.execute(f'ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS \"{col}\" TEXT;')
+                    conn.commit()
 
-        # 4. Truncate new table and reset IDs to 1 for a fresh live snapshot
-        print(f'Refreshing {table_name} table and resetting IDs to 1...')
-        cur.execute(f'TRUNCATE TABLE {table_name} RESTART IDENTITY;')
+            # 4. Truncate new table and reset IDs to 1
+            print(f'Refreshing {table_name} table and resetting IDs to 1...')
+            cur.execute(f'TRUNCATE TABLE {table_name} RESTART IDENTITY;')
 
-        # 5. Insert live data securely
-        cols_string = ', '.join([f'\"{c}\"' for c in ordered_cols])
-        placeholders = ', '.join(['%s'] * len(ordered_cols))
-        insert_query = f'INSERT INTO {table_name} ({cols_string}) VALUES ({placeholders});'
+            # 5. Insert live data securely
+            cols_string = ', '.join([f'\"{c}\"' for c in ordered_cols])
+            placeholders = ', '.join(['%s'] * len(ordered_cols))
+            insert_query = f'INSERT INTO {table_name} ({cols_string}) VALUES ({placeholders});'
 
-        rows_data = []
-        for rec in all_records:
-            row_vals = [rec.get(col) for col in ordered_cols]
-            rows_data.append(tuple(row_vals))
+            rows_data = []
+            for rec in all_records:
+                row_vals = [rec.get(col) for col in ordered_cols]
+                rows_data.append(tuple(row_vals))
 
-        cur.executemany(insert_query, rows_data)
-        conn.commit()
+            cur.executemany(insert_query, rows_data)
+            conn.commit()
 
-        print(f'Successfully pulled live data via yfinance and saved into table: {table_name}!')
+            print(f'Successfully pulled live data via yfinance and saved into table: {table_name}!')
 
         except Exception as e:
             conn.rollback()
